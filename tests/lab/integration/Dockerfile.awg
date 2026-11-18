@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# build-awg-image.sh проверяет immutable ID baseline перед использованием.
+FROM xkeen-openwrt-vm-validator-test:25.12.6
+RUN --mount=type=bind,source=awg-peer,target=/tmp/awg-peer,ro \
+    --mount=type=bind,source=awg-smoke.sh,target=/tmp/awg-smoke.sh,ro \
+    echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && gzip -dc /guest/rootfs.cpio.gz | cpio -id --quiet && \
+    echo '0a68807c7c93963bb66d07717fe0f3ac3945b422b525f8a1e19438d278d7ae11  /guestroot/usr/libexec/xkeenwrt/mihomo' | sha256sum -c - && \
+    cp /tmp/awg-peer /guestroot/usr/libexec/xkeenwrt-integration/awg-peer && \
+    cp /tmp/awg-smoke.sh /guestroot/usr/libexec/xkeenwrt-integration/awg-smoke.sh && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

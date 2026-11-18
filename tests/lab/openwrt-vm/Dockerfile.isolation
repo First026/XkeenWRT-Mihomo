@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM python@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS qemu
+RUN --mount=type=secret,id=proxy_ca,required=true \
+    cp /run/secrets/proxy_ca /usr/local/share/ca-certificates/proxy.crt && \
+    update-ca-certificates && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends 'qemu-system-x86=1:7.2+dfsg-7+deb12u18+b3' cpio && \
+    rm -f /usr/local/share/ca-certificates/proxy.crt && update-ca-certificates --fresh && \
+    rm -rf /var/lib/apt/lists/*
+FROM ghcr.io/openwrt/rootfs@sha256:14401c04218c2e0da0448f099710ada2460636a92395f353351cc616cf3f67af AS rootfs
+FROM ghcr.io/openwrt/imagebuilder@sha256:b7cc4a580367f48436f4b2c00ef4aa8f8a0024d63ffc8248900ffa4b960761b4 AS builder
+FROM qemu
+COPY --from=rootfs / /guestroot/
+COPY --from=builder /builder/build_dir/target-x86_64_musl/linux-x86_64/bzImage /guest/bzImage
+COPY isolation-lab isolation-probe mihomo /guestroot/usr/libexec/xkeenwrt-lab/
+COPY synthetic-ed25519-key.pem /guestroot/usr/libexec/xkeenwrt-lab/synthetic-ed25519-key.pem
+RUN echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    echo '0a68807c7c93963bb66d07717fe0f3ac3945b422b525f8a1e19438d278d7ae11  /guestroot/usr/libexec/xkeenwrt-lab/mihomo' | sha256sum -c - && \
+    printf 'xkeenwrt-validator-lab-v1\n' > /guestroot/etc/xkeenwrt-isolation-lab && \
+    ln -s sbin/init /guestroot/init && cd /guestroot && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+START=09
+STOP=91
+
+# Compatibility entrypoint. Only the verified persistent copy supervises the
+# network; runtime provisions it on first installation. Never create a second
+# procd instance for the package-owned executable.
+start() {
+    [ -f /etc/init.d/xkeenwrt-rescue ] && [ ! -L /etc/init.d/xkeenwrt-rescue ] || return 0
+    /etc/init.d/xkeenwrt-rescue start
+}
+stop() {
+    return 0
+}

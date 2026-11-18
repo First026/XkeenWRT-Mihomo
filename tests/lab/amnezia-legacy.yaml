@@ -1,0 +1,25 @@
+proxies:
+  - name: legacy
+    type: wireguard
+    ip: 192.0.2.2/32
+    ipv6: 2001:db8::2/128
+    private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    udp: true
+    # В случае недоступности сети, попробуйте увеличить MTU до 1420 или 1500
+    mtu: 1280
+    peers:
+      - server: 2001:db8::1
+        port: 51820
+        public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+        pre-shared-key: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
+        allowed-ips:
+          - 0.0.0.0/0
+          - ::/0
+    persistent-keepalive: 25
+    amnezia-wg-option:
+      version: 2
+      j1: <b 0x01>
+      j2: <b 0x02>
+      j3: <b 0x03>
+      itime: 10
+      jc: 4

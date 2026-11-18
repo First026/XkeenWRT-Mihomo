@@ -1,0 +1,6 @@
+proxies:
+  - name: synthetic-trojan
+    type: trojan
+    server: example.org
+    port: 443
+    password: synthetic

@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# Builder verifies this tag resolves to the immutable diagnostic package snapshot.
+FROM xkeen-openwrt-vm-apk-lifecycle:25.12.6
+RUN --mount=type=bind,source=validator-diff,target=/tmp/validator-diff,ro \
+    --mount=type=bind,source=request.json,target=/tmp/request.json,ro \
+    --mount=type=bind,source=validator-diff-guest.sh,target=/tmp/validator-diff-guest.sh,ro \
+    echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && gzip -dc /guest/rootfs.cpio.gz | cpio -id --quiet && \
+    mkdir -p usr/share/xkeen-lab-diagnostic usr/libexec/xkeenwrt-integration && \
+    cp /tmp/request.json usr/share/xkeen-lab-diagnostic/request.json && chmod 644 usr/share/xkeen-lab-diagnostic/request.json && \
+    cp /tmp/validator-diff usr/libexec/xkeenwrt-integration/validator-diff && chmod 755 usr/libexec/xkeenwrt-integration/validator-diff && \
+    cp /tmp/validator-diff-guest.sh usr/share/xkeen-lab-diagnostic/run.sh && chmod 755 usr/share/xkeen-lab-diagnostic/run.sh && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

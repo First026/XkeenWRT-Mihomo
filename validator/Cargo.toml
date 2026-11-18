@@ -1,0 +1,27 @@
+[package]
+name = "xkeenwrt-validator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "xkeenwrt-validate"
+path = "src/main.rs"
+
+[dependencies]
+profile-policy = { path = "../crates/profile-policy" }
+mihomo-release = { path = "../crates/mihomo-release" }
+base64 = "0.22"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+
+[features]
+lab-faults = []
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

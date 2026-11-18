@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# build-runtime-image.sh verifies this local image's immutable ID before use.
+FROM xkeen-openwrt-vm-validator-test:25.12.6
+RUN --mount=type=bind,source=xkeenwrt-ui,target=/tmp/xkeenwrt-ui,ro \
+    --mount=type=bind,source=init,target=/tmp/init,ro \
+    --mount=type=bind,source=runtime-smoke.sh,target=/tmp/runtime-smoke.sh,ro \
+    --mount=type=bind,source=http-wire,target=/tmp/http-wire,ro \
+    echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && gzip -dc /guest/rootfs.cpio.gz | cpio -id --quiet && \
+    cp /tmp/xkeenwrt-ui /guestroot/usr/bin/xkeenwrt-ui && cp /tmp/init/* /guestroot/etc/init.d/ && \
+    cp /tmp/runtime-smoke.sh /guestroot/usr/libexec/xkeenwrt-integration/runtime-smoke.sh && \
+    cp /tmp/http-wire /guestroot/usr/libexec/xkeenwrt-integration/http-wire && \
+    cp /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate-production /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

@@ -1,0 +1,1108 @@
+import { createDefaultForm, generateSubYaml, randomHwid, CLIENT_FINGERPRINTS, type SubscriptionForm } from '../../lib/subscription-form'
+import { isSupportedImport, SUBSCRIPTION_URL_HINT } from '../../lib/uri-policy'
+import { importGroups } from '../../lib/profile-insertion'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { cn, copyText } from '@/lib/utils'
+import { IconCheck, IconCopy, IconFlag, IconInfoCircle, IconLink, IconPlus, IconRefresh, IconReplace, IconSearch, IconX } from '@tabler/icons-react'
+import { useMemo, useState } from 'react'
+import {
+  listMihomoProviders,
+  listMihomoProxies,
+  providerEntryName,
+  proxyItemName,
+  withProviderName,
+  withProxyName,
+} from '../../lib/mihomoReplace'
+import { useAppContext, useModalContext } from '../../lib/store'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '../ui/input-group'
+import { SelectGroup } from '@/components/ui/select'
+
+const USER_AGENTS = [
+  'ClashMeta/1.19.30; mihomo/1.19.30',
+  'ClashMetaForAndroid/2.11.33.Meta',
+  'Happ/5.6.0/ios/2608171408651',
+  'v2rayN/7.24.8',
+  'v2rayNG/2.2.6'
+]
+
+
+const FLAG_OPTIONS: { emoji: string; label: string; en: string }[] = [
+  { emoji: '🇷🇺', label: 'Россия', en: 'Russia' },
+  { emoji: '🇺🇦', label: 'Украина', en: 'Ukraine' },
+  { emoji: '🇧🇾', label: 'Беларусь', en: 'Belarus' },
+  { emoji: '🇰🇿', label: 'Казахстан', en: 'Kazakhstan' },
+  { emoji: '🇺🇿', label: 'Узбекистан', en: 'Uzbekistan' },
+  { emoji: '🇬🇪', label: 'Грузия', en: 'Georgia' },
+  { emoji: '🇦🇲', label: 'Армения', en: 'Armenia' },
+  { emoji: '🇦🇿', label: 'Азербайджан', en: 'Azerbaijan' },
+  { emoji: '🇫🇮', label: 'Финляндия', en: 'Finland' },
+  { emoji: '🇸🇪', label: 'Швеция', en: 'Sweden' },
+  { emoji: '🇳🇴', label: 'Норвегия', en: 'Norway' },
+  { emoji: '🇩🇰', label: 'Дания', en: 'Denmark' },
+  { emoji: '🇮🇸', label: 'Исландия', en: 'Iceland' },
+  { emoji: '🇩🇪', label: 'Германия', en: 'Germany' },
+  { emoji: '🇫🇷', label: 'Франция', en: 'France' },
+  { emoji: '🇳🇱', label: 'Нидерланды', en: 'Netherlands' },
+  { emoji: '🇧🇪', label: 'Бельгия', en: 'Belgium' },
+  { emoji: '🇨🇭', label: 'Швейцария', en: 'Switzerland' },
+  { emoji: '🇦🇹', label: 'Австрия', en: 'Austria' },
+  { emoji: '🇵🇱', label: 'Польша', en: 'Poland' },
+  { emoji: '🇨🇿', label: 'Чехия', en: 'Czechia' },
+  { emoji: '🇸🇰', label: 'Словакия', en: 'Slovakia' },
+  { emoji: '🇭🇺', label: 'Венгрия', en: 'Hungary' },
+  { emoji: '🇷🇴', label: 'Румыния', en: 'Romania' },
+  { emoji: '🇧🇬', label: 'Болгария', en: 'Bulgaria' },
+  { emoji: '🇬🇷', label: 'Греция', en: 'Greece' },
+  { emoji: '🇷🇸', label: 'Сербия', en: 'Serbia' },
+  { emoji: '🇭🇷', label: 'Хорватия', en: 'Croatia' },
+  { emoji: '🇸🇮', label: 'Словения', en: 'Slovenia' },
+  { emoji: '🇮🇹', label: 'Италия', en: 'Italy' },
+  { emoji: '🇪🇸', label: 'Испания', en: 'Spain' },
+  { emoji: '🇵🇹', label: 'Португалия', en: 'Portugal' },
+  { emoji: '🇮🇪', label: 'Ирландия', en: 'Ireland' },
+  { emoji: '🇬🇧', label: 'Великобритания', en: 'United Kingdom' },
+  { emoji: '🇪🇪', label: 'Эстония', en: 'Estonia' },
+  { emoji: '🇱🇻', label: 'Латвия', en: 'Latvia' },
+  { emoji: '🇱🇹', label: 'Литва', en: 'Lithuania' },
+  { emoji: '🇺🇸', label: 'США', en: 'United States' },
+  { emoji: '🇨🇦', label: 'Канада', en: 'Canada' },
+  { emoji: '🇧🇷', label: 'Бразилия', en: 'Brazil' },
+  { emoji: '🇦🇷', label: 'Аргентина', en: 'Argentina' },
+  { emoji: '🇯🇵', label: 'Япония', en: 'Japan' },
+  { emoji: '🇰🇷', label: 'Южная Корея', en: 'South Korea' },
+  { emoji: '🇨🇳', label: 'Китай', en: 'China' },
+  { emoji: '🇸🇬', label: 'Сингапур', en: 'Singapore' },
+  { emoji: '🇭🇰', label: 'Гонконг', en: 'Hong Kong' },
+  { emoji: '🇹🇼', label: 'Тайвань', en: 'Taiwan' },
+  { emoji: '🇹🇷', label: 'Турция', en: 'Turkey' },
+  { emoji: '🇮🇱', label: 'Израиль', en: 'Israel' },
+  { emoji: '🇦🇪', label: 'ОАЭ', en: 'UAE' },
+  { emoji: '🇮🇳', label: 'Индия', en: 'India' },
+  { emoji: '🇦🇺', label: 'Австралия', en: 'Australia' },
+  { emoji: '🇳🇿', label: 'Новая Зеландия', en: 'New Zealand' },
+  { emoji: '🇿🇦', label: 'ЮАР', en: 'South Africa' },
+]
+
+function appendFlags(value: string, flags: string[]): string {
+  const next = flags.filter((flag) => !value.includes(flag))
+  if (!next.length) return value
+  const joined = next.join('|')
+  if (!value.trim()) return joined
+  return value.endsWith('|') ? value + joined : `${value}|${joined}`
+}
+
+function FlagPicker({ value, onAdd }: { value: string; onAdd: (next: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState<string[]>([])
+  const [query, setQuery] = useState('')
+
+  const search = query.trim().toLowerCase()
+  const visibleFlags = search
+    ? FLAG_OPTIONS.filter(
+      (flag) => flag.label.toLowerCase().includes(search) || flag.en.toLowerCase().includes(search)
+    )
+    : FLAG_OPTIONS
+
+  function toggleFlag(flag: string) {
+    setSelected((prev) => (prev.includes(flag) ? prev.filter((f) => f !== flag) : [...prev, flag]))
+  }
+
+  function confirm() {
+    onAdd(appendFlags(value, selected))
+    setOpen(false)
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (next) {
+          setSelected(FLAG_OPTIONS.filter((flag) => value.includes(flag.emoji)).map((flag) => flag.emoji))
+          setQuery('')
+        }
+        setOpen(next)
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground hover:text-foreground size-6 hover:border-[#60a5fa] hover:bg-blue-500/15! active:translate-y-0"
+            aria-label="Добавить флаги"
+          >
+            <IconFlag className="size-4" />
+          </Button>
+        }
+      />
+      <PopoverContent align="end" sideOffset={6} className="w-64">
+        <InputGroup className="h-8">
+          <InputGroupAddon align="inline-start">
+            <IconSearch />
+          </InputGroupAddon>
+          <InputGroupInput
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Поиск: Россия / Russia"
+            className="text-xs"
+          />
+        </InputGroup>
+        <div className="grid max-h-52 grid-cols-6 gap-1 overflow-y-auto pr-1">
+          {visibleFlags.map(({ emoji, label, en }) => (
+            <button
+              key={emoji}
+              type="button"
+              title={`${label} / ${en}`}
+              aria-label={label}
+              aria-pressed={selected.includes(emoji)}
+              onClick={() => toggleFlag(emoji)}
+              className={cn(
+                'flex size-8 items-center justify-center rounded-md border border-transparent text-base transition-colors active:translate-y-0',
+                selected.includes(emoji)
+                  ? 'border-[#60a5fa] bg-blue-500/25'
+                  : 'hover:border-[#60a5fa] hover:bg-blue-500/15'
+              )}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+        {visibleFlags.length === 0 && <p className="text-muted-foreground text-xs">Ничего не найдено</p>}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-muted-foreground text-xs">{selected.length} выбрано</span>
+          <Button size="sm" disabled={!selected.length} onClick={confirm}>
+            Добавить
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+const X25519_OPTIONS: { value: 'inherit' | 'enable' | 'disable'; label: string }[] = [
+  { value: 'inherit', label: 'Наследовать от провайдера' },
+  { value: 'enable', label: 'Включить принудительно' },
+  { value: 'disable', label: 'Выключить принудительно' },
+]
+
+function highlightYaml(code: string): string {
+  return code
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .split('\n')
+    .map((line) => {
+      if (/^\s*#/.test(line)) return `<span style="color:#565f89">${line}</span>`
+
+      const kvMatch = line.match(/^(\s*)(-\s)?([a-zA-Z_][\w.-]*)(\s*:)(.*)?$/)
+      if (kvMatch) {
+        const [, indent, dash = '', key, colon, rest = ''] = kvMatch
+        const marker = dash ? `<span style="color:#89ddff">${dash}</span>` : ''
+        return `${indent}${marker}<span style="color:#7aa2f7">${key}</span>${colon}${highlightYamlValue(rest)}`
+      }
+
+      const listMatch = line.match(/^(\s*-\s)(.*)$/)
+      if (listMatch) {
+        const [, marker, rest] = listMatch
+        return `<span style="color:#89ddff">${marker}</span>${highlightYamlValue(rest)}`
+      }
+
+      return line
+    })
+    .join('\n')
+}
+
+function highlightYamlValue(value: string): string {
+  if (!value.trim()) return value
+  const trimmed = value.trim()
+  const commentIdx = value.search(/\s+#/)
+  if (commentIdx !== -1) {
+    const main = value.slice(0, commentIdx)
+    const comment = value.slice(commentIdx)
+    return highlightYamlValue(main) + `<span style="color:#565f89">${comment}</span>`
+  }
+
+  if (/^-?\d+\.?\d*$/.test(trimmed)) return value.replace(trimmed, `<span style="color:#ff9e64">${trimmed}</span>`)
+  if (/^(true|false|null|~)$/.test(trimmed)) return value.replace(trimmed, `<span style="color:#bb9af7">${trimmed}</span>`)
+  if (/^["']/.test(trimmed)) return value.replace(trimmed, `<span style="color:#9ece6a">${trimmed}</span>`)
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return highlightInlineYaml(value)
+  if (trimmed && !trimmed.startsWith('{') && !trimmed.startsWith('[') && !trimmed.startsWith('*') && !trimmed.startsWith('&'))
+    return value.replace(trimmed, `<span style="color:#9ece6a">${trimmed}</span>`)
+
+  return value
+}
+
+function highlightInlineYaml(value: string): string {
+  let result = ''
+  let i = 0
+  while (i < value.length) {
+    const char = value[i]
+    if (char === '"' || char === "'") {
+      const quote = char
+      let end = i + 1
+      while (end < value.length && value[end] !== quote) end++
+      result += `<span style="color:#9ece6a">${value.slice(i, Math.min(end + 1, value.length))}</span>`
+      i = end + 1
+    } else {
+      result += /[[\]{}]/.test(char) ? `<span style="color:#89ddff">${char}</span>` : char
+      i++
+    }
+  }
+  return result
+}
+
+function highlightJson(code: string): string {
+  return code
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/([[\]{}])/g, '<span style="color:#89ddff">$1</span>')
+    .replace(/"([^"]+)"(\s*:)/g, '<span style="color:#7aa2f7">"$1"</span>$2')
+    .replace(/:\s*"([^"]*)"/g, ': <span style="color:#9ece6a">"$1"</span>')
+    .replace(/:\s*(\d+\.?\d*)/g, ': <span style="color:#ff9e64">$1</span>')
+    .replace(/:\s*(true|false|null)/g, ': <span style="color:#bb9af7">$1</span>')
+}
+
+function highlightCode(code: string): string {
+  return code.trimStart().startsWith('{') ? highlightJson(code) : highlightYaml(code)
+}
+
+interface ReplacePanelProps {
+  label: string
+  items: string[]
+  value: string | null
+  onValueChange: (v: string | null) => void
+  placeholder: string
+  emptyHint: string
+  renameRefs: boolean
+  onRenameRefsChange: (v: boolean) => void
+  description: string | null
+  extraHint: string | null
+  confirmDisabled: boolean
+  onConfirm: () => void
+}
+
+function ReplacePanel({
+  label,
+  items,
+  value,
+  onValueChange,
+  placeholder,
+  emptyHint,
+  renameRefs,
+  onRenameRefsChange,
+  description,
+  extraHint,
+  confirmDisabled,
+  onConfirm,
+}: ReplacePanelProps) {
+  return (
+    <div className="border-border bg-muted/10 flex w-full shrink-0 flex-col gap-3 border-t p-3">
+      <div className="grid gap-1.5">
+        <Label className="text-xs">{label}</Label>
+        <Combobox
+          items={items}
+          value={value}
+          itemToStringLabel={(item) => item}
+          itemToStringValue={(item) => item}
+          onValueChange={onValueChange}
+          autoHighlight
+        >
+          <ComboboxInput fullWidth placeholder={placeholder} disabled={items.length === 0} />
+          <ComboboxContent>
+            <ComboboxEmpty>Ничего не найдено</ComboboxEmpty>
+            <ComboboxList>
+              {(item: string) => (
+                <ComboboxItem key={item} value={item}>
+                  {item}
+                </ComboboxItem>
+              )}
+            </ComboboxList>
+          </ComboboxContent>
+        </Combobox>
+        {items.length === 0 && <p className="text-muted-foreground text-xs">{emptyHint}</p>}
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="grid gap-0.5">
+          <Label className="text-xs">Переименовать ссылки во всём конфиге</Label>
+          {description && <p className="text-muted-foreground text-xs">{description}</p>}
+          {extraHint && <p className="text-destructive text-xs">{extraHint}</p>}
+        </div>
+        <Switch size="sm" checked={renameRefs} onCheckedChange={onRenameRefsChange} />
+      </div>
+
+      <Button size="sm" className="w-full" disabled={confirmDisabled} onClick={onConfirm}>
+        Заменить
+      </Button>
+    </div>
+  )
+}
+
+interface Props {
+  onGenerate: (uri: string, excludeName?: string) => { content: string; type: string } | null
+  onAddToConfig: (content: string, type: string, position: 'start' | 'end', group?: string) => boolean
+  activeDraft: string | null
+  onReplace: (kind: 'proxy' | 'provider', content: string, oldName: string, renameRefs: boolean) => boolean
+}
+
+export function ImportModal({ onGenerate, onAddToConfig, onReplace, activeDraft }: Props) {
+  const { showToast, state } = useAppContext({ includeConfigs: true })
+  const { modals, dispatch } = useModalContext()
+  const [uri, setUri] = useState('')
+  const [result, setResult] = useState<{ content: string; type: string; protocol: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [subForm, setSubForm] = useState<SubscriptionForm | null>(null)
+  const [subTab, setSubTab] = useState('form')
+  const [isCustomUA, setIsCustomUA] = useState(false)
+  const [customUA, setCustomUA] = useState('')
+  const [resultUri, setResultUri] = useState<string | null>(null)
+  const [replaceOpen, setReplaceOpen] = useState(false)
+  const [replaceTarget, setReplaceTarget] = useState<string | null>(null)
+  const [renameRefs, setRenameRefs] = useState(true)
+  const [subDefaultName, setSubDefaultName] = useState<string | null>(null)
+  const [providerNameAutoSet, setProviderNameAutoSet] = useState(false)
+
+  const isValidUri = isSupportedImport(uri)
+  const [selectedGroup, setSelectedGroup] = useState('')
+  const groups = useMemo(() => importGroups(activeDraft ?? ''), [activeDraft])
+
+  function close() {
+    dispatch({ type: 'SHOW_MODAL', modal: 'showImportModal', show: false })
+    {
+      setUri('')
+      setResult(null)
+      setResultUri(null)
+      setSubForm(null)
+      setSubDefaultName(null)
+      setIsCustomUA(false)
+      setCustomUA('')
+      setReplaceOpen(false)
+      setReplaceTarget(null)
+      setRenameRefs(true)
+      setProviderNameAutoSet(false)
+      setCopied(false)
+      setSelectedGroup('')
+    }
+  }
+
+  function generate() {
+    if (!isValidUri) return
+    if (activeDraft === null) { showToast('Откройте редактор конфигурации перед импортом.', 'error'); return }
+    const trimmed = uri.trim()
+    setReplaceOpen(false)
+    setReplaceTarget(null)
+    setRenameRefs(true)
+    setProviderNameAutoSet(false)
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      try {
+        const form = createDefaultForm(trimmed, activeDraft)
+        setSubForm(form); setSubDefaultName(form.name)
+        setResult({ content: '', type: 'proxy-provider', protocol: 'HTTP' })
+        setResultUri(null); setSubTab('form')
+        setSelectedGroup(groups[0]?.name ?? '')
+      } catch (e) { showToast(e instanceof Error ? e.message : 'Ошибка URL подписки', 'error') }
+      return
+    }
+
+    try {
+      const generated = onGenerate(trimmed)
+      if (generated) {
+        const protocol = trimmed.match(/^([a-zA-Z0-9+\-.]+):\/\//)?.[1]?.toUpperCase() ?? ''
+        setResult({ ...generated, protocol })
+        setResultUri(trimmed)
+        setSubForm(null)
+        setSubDefaultName(null)
+      } else {
+        setResult(null)
+        setResultUri(null)
+        setSubForm(null)
+        setSubDefaultName(null)
+      }
+    } catch (e: any) {
+      showToast(e.message, 'error')
+    }
+  }
+
+  function regenerateResult(excludeName?: string) {
+    if (!resultUri) return
+    try {
+      const next = onGenerate(resultUri, excludeName)
+      if (next) setResult((prev) => ({ ...next, protocol: prev?.protocol ?? '' }))
+    } catch (e: any) {
+      showToast(e.message, 'error')
+    }
+  }
+
+  function toggleReplace() {
+    const next = !replaceOpen
+    setReplaceOpen(next)
+    if (next) return
+    if (replaceTarget) {
+      setReplaceTarget(null)
+      if (isMihomoProxyFlow) regenerateResult()
+    }
+    if (isMihomoProviderFlow && providerNameAutoSet && subDefaultName) {
+      updateSubField('name', subDefaultName)
+      setProviderNameAutoSet(false)
+    }
+  }
+
+  function selectReplaceTarget(target: string | null) {
+    setReplaceTarget(target)
+    if (isMihomoProxyFlow) {
+      regenerateResult(target ?? undefined)
+      return
+    }
+    if (isMihomoProviderFlow && subForm && target && (providerNameAutoSet || subForm.name === subDefaultName)) {
+      updateSubField('name', target)
+      setProviderNameAutoSet(true)
+    }
+  }
+
+  function confirmReplace() {
+    if (isMihomoProxyFlow) {
+      if (!result || !replaceTarget || (renameRefs && !newProxyName)) return
+      if (onReplace('proxy', previewContent, replaceTarget, renameRefs)) close()
+      return
+    }
+    if (isMihomoProviderFlow) {
+      if (!subForm || !replaceTarget || providerReplaceDisabled) return
+      if (onReplace('provider', finalProviderContent, replaceTarget, renameRefs)) close()
+    }
+  }
+
+  function updateSubField<K extends keyof SubscriptionForm>(key: K, value: SubscriptionForm[K]) {
+    setSubForm((prev) => (prev ? { ...prev, [key]: value } : null))
+  }
+
+  function regenerateHwid() {
+    updateSubField('hwid', randomHwid())
+  }
+
+  function addSubToConfig(position: 'start' | 'end') {
+    if (!subForm) return
+    try {
+      const content = generateSubYaml(subForm)
+      if (onAddToConfig(content, 'proxy-provider', position, selectedGroup || undefined)) close()
+    } catch (e) { showToast(e instanceof Error ? e.message : 'Ошибка формы подписки', 'error') }
+  }
+
+  async function copySub() {
+    if (!subForm) return
+    const ok = await copyText(finalProviderContent)
+    if (!ok) {
+      showToast('Ошибка копирования', 'error')
+      return
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function copy() {
+    if (!result) return
+    const ok = await copyText(result.content)
+    if (!ok) {
+      showToast('Ошибка копирования', 'error')
+      return
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  function addToConfig(position: 'start' | 'end') {
+    if (!result) return
+    if (onAddToConfig(result.content, result.type, position)) close()
+  }
+
+  const showSubForm = subForm && result
+  const isMihomoProxyFlow = state.currentCore === 'mihomo' && result?.type === 'proxy'
+  const isMihomoProviderFlow = state.currentCore === 'mihomo' && Boolean(showSubForm)
+  const configYamlContent = activeDraft ?? ''
+  const mihomoProxies = useMemo(
+    () => (isMihomoProxyFlow ? listMihomoProxies(configYamlContent) : []),
+    [isMihomoProxyFlow, configYamlContent]
+  )
+  const providerNames = useMemo(
+    () => (isMihomoProviderFlow ? listMihomoProviders(configYamlContent) : []),
+    [isMihomoProviderFlow, configYamlContent]
+  )
+  const newProxyName = result ? proxyItemName(result.content) : null
+  const previewContent =
+    result && replaceTarget ? (renameRefs ? result.content : withProxyName(result.content, replaceTarget)) : (result?.content ?? '')
+
+  const subPreview = useMemo(() => {
+    try { return {content: subForm ? generateSubYaml(subForm) : '', error: ''} }
+    catch (e) { return {content: '', error: e instanceof Error ? e.message : 'Ошибка формы подписки'} }
+  }, [subForm])
+  const providerEntry = isMihomoProviderFlow ? subPreview.content : ''
+  const newProviderName = providerEntry ? providerEntryName(providerEntry) : null
+  const finalProviderContent =
+    providerEntry && replaceTarget ? (renameRefs ? providerEntry : withProviderName(providerEntry, replaceTarget)) : providerEntry
+  const trimmedSubName = subForm?.name.trim() ?? ''
+  const providerNameConflict = Boolean(
+    isMihomoProviderFlow &&
+    renameRefs &&
+    replaceTarget !== null &&
+    subForm !== null &&
+    trimmedSubName !== replaceTarget &&
+    providerNames.includes(trimmedSubName)
+  )
+  const providerReplaceDisabled = !replaceTarget || newProviderName === null || providerNameConflict || !trimmedSubName || !!subPreview.error
+
+  return (
+    <TooltipProvider delayDuration={500}>
+      <Dialog open={modals.showImportModal} onOpenChange={(open) => !open && close()}>
+        <DialogContent className="flex max-h-[90dvh] w-auto! max-w-[min(90vw,900px)]! min-w-[min(90vw,480px)]! flex-col overflow-hidden">
+          <DialogHeader className="shrink-0 pb-1">
+            <DialogTitle className="flex items-center gap-2 pb-2">
+              <IconLink size={24} className="text-chart-2" /> Добавить подключение
+            </DialogTitle>
+            <DialogDescription>
+              Вставьте ссылку в формате protocol://{state.currentCore === 'mihomo' && ' или https://'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+            {showSubForm && (
+              <div className="border-border bg-card flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+                <Tabs value={subTab} onValueChange={setSubTab} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <div className="border-border bg-muted/30 flex w-full shrink-0 items-center justify-between border-b px-3 py-1">
+                    <TabsList variant="line" className="h-8">
+                      <TabsTrigger value="form" className="text-sm">Настройки</TabsTrigger>
+                      <TabsTrigger value="raw" className="text-sm">YAML</TabsTrigger>
+                    </TabsList>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button variant="ghost" size="icon-sm" onClick={subForm ? copySub : copy}>
+                            {copied ? <IconCheck className="text-green-500" /> : <IconCopy className="size-4.5" />}
+                          </Button>
+                        }
+                      />
+                      <TooltipContent side="left">Скопировать</TooltipContent>
+                    </Tooltip>
+                  </div>
+
+                  <TabsContent value="form" className="min-h-0 flex-1 overflow-auto p-4">
+                    <div className="flex flex-col gap-4">
+                      <p className="text-muted-foreground text-xs">HTTPS «Сгенерировать» создаёт provider в черновике. Подписка загружается на Validate после «Применить»; «Сохранить» только записывает черновик. Автообновление источника не поддерживается: используйте «Подписки → Обновить». X25519 наследуется из узлов; выражения override-expr не поддерживаются. URL проверки задержки фиксирован.</p>
+                      <p className="text-muted-foreground text-xs">{SUBSCRIPTION_URL_HINT}</p>
+                      {subPreview.error && <p role="alert" className="text-destructive text-xs">{subPreview.error}</p>}
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="subscription-group">Группа для подписки</Label>
+                        <select id="subscription-group" className="bg-background border rounded p-2 text-sm" value={selectedGroup} onChange={e => setSelectedGroup(e.target.value)}>
+                          <option value="">Без привязки к группе</option>
+                          {groups.map(g => <option key={g.name} value={g.name}>{g.name}{g.includesProviders ? ' (include-all)' : ' (use)'}</option>)}
+                        </select>
+                        <p className="text-muted-foreground text-xs">{selectedGroup ? 'После вставки provider будет доступен выбранной группе. Узлы появятся после проверки, применения и запуска Mihomo.' : groups.some(g => g.includesProviders) ? 'Provider включается существующими группами include-all.' : 'Provider не привязан: добавьте группу с use или include-all, иначе узлы не появятся в селекторах.'}</p>
+                      </div>
+                      <fieldset className="border-border rounded-lg border px-4 pb-4 pt-1.5">
+                        <legend className="text-sm font-medium px-1">Основное</legend>
+                        <div className="flex flex-col gap-3 pt-1">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">Название провайдера</Label>
+                              <Input
+                                aria-label="Название провайдера" value={subForm.name}
+                                onChange={(e) => {
+                                  updateSubField('name', e.target.value)
+                                  setProviderNameAutoSet(false)
+                                }}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">Автообновление: недоступно</Label>
+                              <InputGroup className="h-8">
+                                <InputGroupInput
+                                  type="number"
+                                  min={60}
+                                  inputMode="numeric"
+                                  className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none text-xs"
+                                  disabled aria-label="Интервал автообновления (не поддерживается)" value={subForm.interval}
+                                  onChange={(e) => updateSubField('interval', +e.target.value)}
+                                />
+                                <InputGroupAddon align="inline-end" className="text-muted-foreground px-2 text-xs">
+                                  сек
+                                </InputGroupAddon>
+                              </InputGroup>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-1.5">
+                            <Label className="text-xs">URL</Label>
+                            <Input
+                              aria-label="URL подписки" value={subForm.url}
+                              onChange={(e) => updateSubField('url', e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">
+                                Client Fingerprint<span className="text-destructive"> *</span>
+                              </Label>
+                              <Select
+                                value={subForm.fingerprint || '__inherit__'}
+                                items={{
+                                  __inherit__: 'Наследовать от провайдера',
+                                  ...Object.fromEntries(CLIENT_FINGERPRINTS.map((fp) => [fp, fp])),
+                                }}
+                                onValueChange={(v) => updateSubField('fingerprint', v === '__inherit__' ? '' : v)}
+                              >
+                                <SelectTrigger size="sm" className="h-8 w-full text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    <SelectItem value="__inherit__">
+                                      <span className="text-xs">Наследовать от провайдера</span>
+                                    </SelectItem>
+                                    {CLIENT_FINGERPRINTS.map((fp) => (
+                                      <SelectItem key={fp} value={fp}>
+                                        <span className="text-xs">{fp}</span>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="grid gap-1.5">
+                              <div className="flex items-center gap-1">
+                                <Label className="text-xs">
+                                  X25519MLKEM768<span className="text-destructive"> *</span>
+                                </Label>
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<span className="text-muted-foreground inline-flex cursor-help" />}
+                                    aria-label="Подробнее: X25519MLKEM768"
+                                  >
+                                    <IconInfoCircle size={14} />
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" sideOffset={8} className="max-w-xs">
+                                    Принудительное включение X25519MLKEM768 работает не со всеми вариантами
+                                    client-fingerprint. В противном случае принудительное включение не даст никакого
+                                    эффекта.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </div>
+                              <Select
+                                disabled value={subForm.x25519}
+                                items={Object.fromEntries(X25519_OPTIONS.map((opt) => [opt.value, opt.label]))}
+                                onValueChange={(v) => updateSubField('x25519', v as SubscriptionForm['x25519'])}
+                              >
+                                <SelectTrigger size="sm" className="h-8 w-full text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    {X25519_OPTIONS.map((opt) => (
+                                      <SelectItem key={opt.value} value={opt.value}>
+                                        <span className="text-xs">{opt.label}</span>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+
+                          <p className="text-muted-foreground text-xs">
+                            * Требуется версия Mihomo v1.19.29 и новее
+                          </p>
+
+                        </div>
+                      </fieldset>
+
+                      <fieldset className="border-border rounded-lg border px-4 pb-4 pt-1.5">
+                        <legend className="text-sm font-medium px-1 flex items-center gap-2">
+                          Проверка работоспособности
+                          <Switch
+                            size="sm"
+                            checked={subForm.hcEnable}
+                            onCheckedChange={(v) => updateSubField('hcEnable', v)}
+                          />
+                        </legend>
+                        {subForm.hcEnable && (
+                          <div className="grid grid-cols-3 gap-2 pt-1">
+                            <div className="col-span-3 grid gap-1.5">
+                              <Label className="text-xs">URL проверки</Label>
+                              <Input
+                                readOnly aria-label="URL проверки задержки (фиксированный)" value={subForm.hcUrl}
+                                onChange={(e) => updateSubField('hcUrl', e.target.value)}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">Интервал проверок</Label>
+                              <InputGroup className="h-8">
+                                <InputGroupInput
+                                  type="number"
+                                  min={30}
+                                  inputMode="numeric"
+                                  className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none text-xs"
+                                  value={subForm.hcInterval}
+                                  onChange={(e) => updateSubField('hcInterval', +e.target.value)}
+                                />
+                                <InputGroupAddon align="inline-end" className="text-muted-foreground px-2 text-xs">
+                                  сек
+                                </InputGroupAddon>
+                              </InputGroup>
+                            </div>
+                            <div className="col-span-2 grid gap-1.5">
+                              <Label className="text-xs">Ожидаемый код HTTP-ответа</Label>
+                              <Input
+                                type="number"
+                                min={100}
+                                max={599}
+                                inputMode="numeric"
+                                className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none h-8 text-xs"
+                                value={subForm.hcExpectedStatus}
+                                onChange={(e) => updateSubField('hcExpectedStatus', +e.target.value)}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </fieldset>
+
+                      <fieldset className="border-border rounded-lg border px-4 pb-4 pt-1.5">
+                        <legend className="text-sm font-medium px-1 flex items-center gap-2">
+                          Заголовки
+                          <Switch
+                            size="sm"
+                            checked={subForm.headerEnable}
+                            onCheckedChange={(v) => updateSubField('headerEnable', v)}
+                          />
+                        </legend>
+                        {subForm.headerEnable && (
+                          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">User-Agent</Label>
+                              <Select value={isCustomUA ? '__custom__' : subForm.userAgent} onValueChange={(v) => {
+                                if (v === '__custom__') {
+                                  setIsCustomUA(true)
+                                  updateSubField('userAgent', customUA || '')
+                                } else {
+                                  setIsCustomUA(false)
+                                  updateSubField('userAgent', v)
+                                }
+                              }}>
+                                <SelectTrigger size="sm" className="h-8 w-full text-xs">
+                                  {isCustomUA ? <span className="text-xs text-muted-foreground">Свой User-Agent...</span> : <SelectValue />}
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    {USER_AGENTS.map((ua) => (
+                                      <SelectItem key={ua} value={ua}>
+                                        <span className="text-xs">{ua}</span>
+                                      </SelectItem>
+                                    ))}
+                                    <SelectItem value="__custom__">
+                                      <span className="text-xs text-muted-foreground">Свой User-Agent...</span>
+                                    </SelectItem>
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                              {isCustomUA && (
+                                <Input
+                                  value={customUA}
+                                  onChange={(e) => {
+                                    setCustomUA(e.target.value)
+                                    updateSubField('userAgent', e.target.value)
+                                  }}
+                                  placeholder="Введите User-Agent"
+                                  className="h-8 text-xs"
+                                />
+                              )}
+                            </div>
+                            <div className="grid gap-1.5">
+                              <div className="flex items-center gap-1">
+                                <Label className="text-xs">x-hwid</Label>
+                                <Button variant="ghost" size="icon-xs" onClick={regenerateHwid} className="size-4">
+                                  <IconRefresh className="size-3" />
+                                </Button>
+                              </div>
+                              <Input
+                                value={subForm.hwid}
+                                onChange={(e) => updateSubField('hwid', e.target.value)}
+                                className="h-8 font-mono text-xs"
+                              />
+                              {isCustomUA && <div className="h-8" />}
+                            </div>
+                          </div>
+                        )}
+                      </fieldset>
+
+                      <fieldset className="border-border rounded-lg border px-4 pb-4 pt-1.5">
+                        <legend className="text-sm font-medium px-1 flex items-center gap-2">
+                          Фильтр подключений
+                          <Switch
+                            size="sm"
+                            checked={subForm.filterEnable}
+                            onCheckedChange={(v) => updateSubField('filterEnable', v)}
+                          />
+                        </legend>
+                        {subForm.filterEnable && (
+                          <div className="grid gap-2 pt-1">
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">По названию (включить)</Label>
+                              <InputGroup className="h-8">
+                                <InputGroupInput
+                                  value={subForm.filter}
+                                  onChange={(e) => updateSubField('filter', e.target.value)}
+                                  placeholder='my-good-proxy'
+                                  className="text-xs"
+                                />
+                                <InputGroupAddon align="inline-end" className="gap-1 px-2 py-1 text-xs has-[>button]:mr-0">
+                                  <FlagPicker value={subForm.filter} onAdd={(next) => updateSubField('filter', next)} />
+                                  REGEX
+                                </InputGroupAddon>
+                              </InputGroup>
+                            </div>
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">По названию (исключить)</Label>
+                              <InputGroup className="h-8">
+                                <InputGroupInput
+                                  value={subForm.excludeFilter}
+                                  onChange={(e) => updateSubField('excludeFilter', e.target.value)}
+                                  placeholder="my-bad-proxy"
+                                  className="text-xs"
+                                />
+                                <InputGroupAddon align="inline-end" className="gap-1 px-2 py-1 text-xs has-[>button]:mr-0">
+                                  <FlagPicker value={subForm.excludeFilter} onAdd={(next) => updateSubField('excludeFilter', next)} />
+                                  REGEX
+                                </InputGroupAddon>
+                              </InputGroup>
+                            </div>
+                            <div className="grid gap-1.5">
+                              <Label className="text-xs">По типу (исключить)</Label>
+                              <Input
+                                value={subForm.excludeType}
+                                onChange={(e) => updateSubField('excludeType', e.target.value)}
+                                placeholder="trojan|vmess"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </fieldset>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="raw" className="bg-input-background min-h-0 flex-1 overflow-auto">
+                    <pre
+                      className="m-0 p-3 font-mono text-[13px] tracking-tight"
+                      dangerouslySetInnerHTML={{
+                        __html: highlightCode(subForm ? finalProviderContent : ''),
+                      }}
+                    />
+                  </TabsContent>
+                </Tabs>
+
+                <div className="border-border bg-muted/10 flex w-full shrink-0 gap-2 border-t p-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={replaceOpen}
+                    className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                    onClick={() => addSubToConfig('start')}
+                  >
+                    <IconPlus /> <span className="truncate">В начало</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={replaceOpen}
+                    className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                    onClick={() => addSubToConfig('end')}
+                  >
+                    <IconPlus /> <span className="truncate">В конец</span>
+                  </Button>
+                  {isMihomoProviderFlow && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                      onClick={toggleReplace}
+                    >
+                      <IconReplace /> <span className="truncate">Заменить</span>
+                    </Button>
+                  )}
+                </div>
+
+                {isMihomoProviderFlow && replaceOpen && (
+                  <ReplacePanel
+                    label="Провайдер для замены"
+                    items={providerNames}
+                    value={replaceTarget}
+                    onValueChange={selectReplaceTarget}
+                    placeholder="Выберите провайдера"
+                    emptyHint="Массив proxy-providers в конфиге не найден"
+                    renameRefs={renameRefs}
+                    onRenameRefsChange={setRenameRefs}
+                    description={
+                      replaceTarget
+                        ? renameRefs
+                          ? newProviderName
+                            ? `Ссылки на «${replaceTarget}» в proxy-groups (use) станут «${newProviderName}»`
+                            : null
+                          : `Новый провайдер получит имя «${replaceTarget}», ссылки не изменятся`
+                        : null
+                    }
+                    extraHint={
+                      replaceTarget
+                        ? newProviderName === null
+                          ? 'Не удалось определить имя провайдера'
+                          : providerNameConflict
+                            ? `Имя «${trimmedSubName}» уже используется`
+                            : null
+                        : null
+                    }
+                    confirmDisabled={providerReplaceDisabled}
+                    onConfirm={confirmReplace}
+                  />
+                )}
+              </div>
+            )}
+
+            {result && !subForm && (
+              <div className="border-border bg-card flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+                <div className="border-border bg-muted/30 flex w-full shrink-0 items-center justify-between border-b px-3 py-1">
+                  <Badge className="bg-blue-500/10! px-2 pt-2.25 pb-2.5 text-[10px] tracking-wider text-blue-400">{result.protocol}</Badge>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button variant="ghost" size="icon-sm" onClick={copy}>
+                          {copied ? <IconCheck className="text-green-500" /> : <IconCopy className="size-4.5" />}
+                        </Button>
+                      }
+                    />
+                    <TooltipContent side="left">Скопировать</TooltipContent>
+                  </Tooltip>
+                </div>
+
+                <div className="bg-input-background min-h-0 flex-1 overflow-auto">
+                  <pre
+                    className="m-0 p-3 font-mono text-[13px] tracking-tight"
+                    dangerouslySetInnerHTML={{
+                      __html: highlightCode(previewContent),
+                    }}
+                  />
+                </div>
+
+                <div className="border-border bg-muted/10 flex w-full shrink-0 gap-2 border-t p-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={replaceOpen}
+                    className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                    onClick={() => addToConfig('start')}
+                  >
+                    <IconPlus /> <span className="truncate">В начало</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={replaceOpen}
+                    className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                    onClick={() => addToConfig('end')}
+                  >
+                    <IconPlus /> <span className="truncate">В конец</span>
+                  </Button>
+                  {isMihomoProxyFlow && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-w-0 flex-1 shrink gap-1.5 px-1.5 text-xs max-sm:[&_svg]:hidden sm:px-2.5"
+                      onClick={toggleReplace}
+                    >
+                      <IconReplace /> <span className="truncate">Заменить</span>
+                    </Button>
+                  )}
+                </div>
+
+                {isMihomoProxyFlow && replaceOpen && (
+                  <ReplacePanel
+                    label="Прокси для замены"
+                    items={mihomoProxies}
+                    value={replaceTarget}
+                    onValueChange={selectReplaceTarget}
+                    placeholder="Выберите прокси"
+                    emptyHint="Массив proxies в конфиге не найден"
+                    renameRefs={renameRefs}
+                    onRenameRefsChange={setRenameRefs}
+                    description={
+                      replaceTarget
+                        ? renameRefs
+                          ? newProxyName
+                            ? `Ссылки на «${replaceTarget}» в группах, правилах, dialer-proxy и DNS станут «${newProxyName}»`
+                            : 'Не удалось определить имя нового прокси'
+                          : `Новый прокси получит имя «${replaceTarget}», ссылки не изменятся`
+                        : null
+                    }
+                    extraHint={null}
+                    confirmDisabled={!replaceTarget || (renameRefs && !newProxyName)}
+                    onConfirm={confirmReplace}
+                  />
+                )}
+              </div>
+            )}
+
+            <div className="mt-auto flex shrink-0 flex-col gap-3 pt-1">
+              <p className="text-muted-foreground text-xs">Для VLESS/VMess/Trojan поддержаны TCP, WS, gRPC. xhttp/httpupgrade и min/max packet size у hy2 пока не поддерживаются. spx принимается только как путь метаданных VLESS Reality; Mihomo его не использует.</p>
+              <InputGroup>
+                <InputGroupInput
+                  value={uri}
+                  onChange={(e) => setUri(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && isValidUri && generate()}
+                  placeholder="vless://..."
+                  className={uri ? 'pr-7' : ''}
+                />
+                <InputGroupAddon align="inline-end">
+                  {uri && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => {
+                        setUri('')
+                        setResult(null)
+                        setResultUri(null)
+                        setSubForm(null)
+                        setSubDefaultName(null)
+                        setReplaceOpen(false)
+                        setReplaceTarget(null)
+                        setRenameRefs(true)
+                        setProviderNameAutoSet(false)
+                      }}
+                      className="text-muted-foreground hover:text-destructive hover:bg-transparent!"
+                    >
+                      <IconX size={13} />
+                    </Button>
+                  )}
+                </InputGroupAddon>
+              </InputGroup>
+
+              <Button onClick={generate} disabled={!isValidUri} className="w-full">
+                Сгенерировать
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </TooltipProvider>
+  )
+}

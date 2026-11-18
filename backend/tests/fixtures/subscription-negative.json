@@ -1,0 +1,18 @@
+[
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=xhttp",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=httpupgrade",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=tcp&headerType=http",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=ws&headerType=none",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?spx=%2F",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?security=reality&pbk=synthetic&spx=https%3A%2F%2Fexample.org",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?security=reality&pbk=synthetic&spx=%2F%2Fexample.org",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?security=reality&pbk=synthetic&spx=%2F%0A",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=grpc&mode=multi",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=unsupported",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?flow=unsupported",
+  "hy2://synthetic@vpn.example.invalid:443?minPacketSize=64",
+  "hy2://synthetic@vpn.example.invalid:443?maxPacketSize=512",
+  "hy2://synthetic@vpn.example.invalid:443?obfs-min-packet-size=64",
+  "hy2://synthetic@vpn.example.invalid:443?obfs-max-packet-size=512",
+  "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?private-credential-name=secret"
+]

@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM xkeen-openwrt-vm:25.12.6
+RUN --mount=type=bind,source=parent,target=/tmp/parent,ro \
+    --mount=type=bind,source=probe,target=/tmp/probe,ro \
+    --mount=type=bind,source=guest,target=/tmp/guest,ro \
+    echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && gzip -dc /guest/rootfs.cpio.gz | cpio -id --quiet && \
+    mkdir -p /guestroot/usr/libexec/xkeenwrt && cp /tmp/parent /guestroot/usr/libexec/xkeenwrt/lab-clone-parent && \
+    cp /tmp/probe /guestroot/usr/libexec/xkeenwrt/lab-clone-probe && cp /tmp/guest /guestroot/usr/libexec/xkeenwrt/lab-clone-test && \
+    printf 'xkeenwrt-validator-lab-v1\n' > /guestroot/etc/xkeenwrt-isolation-lab && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

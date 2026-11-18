@@ -1,0 +1,5 @@
+mode: rule
+proxies: []
+rules:
+  - GEOIP,CN,DIRECT
+  - MATCH,DIRECT

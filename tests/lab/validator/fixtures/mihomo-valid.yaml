@@ -1,0 +1,4 @@
+mode: rule
+proxies: []
+rules:
+  - MATCH,DIRECT

@@ -1,0 +1,7 @@
+#!/bin/sh /etc/rc.common
+
+START=08
+
+start() {
+	/usr/share/xkeen-lab-packages/remove-reboot-snapshot.sh
+}

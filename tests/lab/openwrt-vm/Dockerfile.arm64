@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM python@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS qemu
+RUN --mount=type=secret,id=proxy_ca,required=true \
+    cp /run/secrets/proxy_ca /usr/local/share/ca-certificates/proxy.crt && \
+    update-ca-certificates && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends 'qemu-system-arm=1:7.2+dfsg-7+deb12u18+b3' cpio && \
+    rm -f /usr/local/share/ca-certificates/proxy.crt && update-ca-certificates --fresh && \
+    rm -rf /var/lib/apt/lists/*
+FROM ghcr.io/openwrt/rootfs@sha256:22f13387da208c0fb4150c41f3ec12e34cc5994a0717a49e50aa9f9ae6cb5e7b AS rootfs
+FROM ghcr.io/openwrt/imagebuilder@sha256:08660d295cc84143c096d6a5eab257433168ee0766f26736910a909c37e4db13 AS builder
+FROM qemu AS base
+COPY --from=rootfs / /guestroot/
+COPY --from=builder /builder/build_dir/target-aarch64_generic_musl/linux-armsr_armv8/vmlinux /guest/Image
+RUN echo '2b9ce48df5536e993ee691339057828488e4a31be9c2bb5d3f6120f1135fcbb0  /guest/Image' | sha256sum -c - && \
+    grep -Fx "DISTRIB_RELEASE='25.12.6'" /guestroot/etc/openwrt_release && \
+    grep -Fx "DISTRIB_REVISION='r33311-981c978eff'" /guestroot/etc/openwrt_release && \
+    grep -Fx "DISTRIB_TARGET='armsr/armv8'" /guestroot/etc/openwrt_release && \
+    rm /guestroot/init && ln -s sbin/init /guestroot/init
+FROM base AS baseline
+RUN cd /guestroot && find . -print0 | cpio --null -o -H newc > /guest/rootfs.cpio && rm -rf /guestroot
+FROM base AS isolation
+COPY isolation-lab isolation-probe mihomo /guestroot/usr/libexec/xkeenwrt-lab/
+COPY synthetic-ed25519-key.pem /guestroot/usr/libexec/xkeenwrt-lab/synthetic-ed25519-key.pem
+RUN echo '022da41e03ce70641a2f50c485b4f69ade8f1c7aeeece2cf1ec45c614a029441  /guestroot/usr/libexec/xkeenwrt-lab/mihomo' | sha256sum -c - && \
+    printf 'xkeenwrt-validator-lab-v1\n' > /guestroot/etc/xkeenwrt-isolation-lab && \
+    cd /guestroot && find . -print0 | cpio --null -o -H newc > /guest/rootfs.cpio && rm -rf /guestroot

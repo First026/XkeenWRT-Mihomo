@@ -1,0 +1,63 @@
+name: Lab build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  x86_64-lab:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.22.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - name: Build frontend and lab binary
+        id: build
+        run: ./scripts/build-lab.sh
+      - name: Frontend tests
+        working-directory: frontend
+        run: bun test tests
+      - name: Package hook contract
+        run: sh tests/package-hook-contract.sh
+      - name: Check formatting
+        run: |
+          cargo fmt --manifest-path backend/Cargo.toml --all -- --check
+          cargo fmt --manifest-path recovery/Cargo.toml --all -- --check
+          cargo fmt --manifest-path validator/Cargo.toml --all -- --check
+          cargo fmt --manifest-path crates/profile-policy/Cargo.toml --all -- --check
+      - name: Clippy all crates
+        run: |
+          cargo clippy --manifest-path backend/Cargo.toml --locked --all-targets -- -D warnings
+          cargo clippy --manifest-path recovery/Cargo.toml --locked --all-targets -- -D warnings
+          cargo clippy --manifest-path validator/Cargo.toml --locked --all-targets -- -D warnings
+          cargo clippy --manifest-path crates/profile-policy/Cargo.toml --locked --all-targets -- -D warnings
+      # One step per crate: a failure in one crate (or in fmt/clippy) must not
+      # hide the other crates' results. Tests still need a successful build.
+      - name: Test backend
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo test --manifest-path backend/Cargo.toml --locked --no-fail-fast
+      # Ubuntu 24.04 AppArmor blocks unprivileged user namespaces, so
+      # `unshare --user --map-root-user` cannot write uid_map without this.
+      - name: Allow user namespaces for recovery tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Test recovery
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: unshare --user --map-root-user cargo test --manifest-path recovery/Cargo.toml --locked --no-fail-fast
+      - name: Test validator
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo test --manifest-path validator/Cargo.toml --locked --no-fail-fast
+      - name: Test profile-policy
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo test --manifest-path crates/profile-policy/Cargo.toml --locked --no-fail-fast

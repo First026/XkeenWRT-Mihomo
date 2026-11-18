@@ -1,0 +1,48 @@
+#!/bin/sh
+# Lab-only initramfs adapter: mount a disposable persistent overlay from QEMU virtio disk.
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || :
+mount -t proc proc /proc 2>/dev/null || :
+mount -t sysfs sysfs /sys 2>/dev/null || :
+mkdir -p /run /tmp /overlay /newroot
+mount -t tmpfs tmpfs /run 2>/dev/null || :
+mount -t tmpfs tmpfs /tmp 2>/dev/null || :
+# This armsr kernel ships virtio support as modules; load the mmio transport and block driver.
+modprobe virtio_mmio 2>/dev/null || :
+modprobe virtio_blk 2>/dev/null || :
+n=0
+while [ ! -d /sys/block/vda ] && [ "$n" -lt 20 ]; do
+    mdev -s 2>/dev/null || :
+    sleep 1
+    n=$((n + 1))
+done
+if [ -d /sys/block/vda ] && [ ! -b /dev/vda ]; then
+    dev=$(cat /sys/block/vda/dev)
+    mknod /dev/vda b "${dev%:*}" "${dev#*:}"
+fi
+if [ ! -b /dev/vda ]; then
+    echo "R6_NATIVE_INIT=NO_PERSIST_DISK sys=$(ls /sys/block 2>/dev/null | tr '\n' ',')" >/dev/console
+    exec /sbin/init
+fi
+if ! blkid /dev/vda 2>/dev/null | grep -q 'TYPE="ext4"'; then
+    mke2fs -q -t ext4 -F /dev/vda || { echo 'R6_NATIVE_INIT=MKFS_FAILED' >/dev/console; exec /sbin/init; }
+fi
+mount -t ext4 /dev/vda /overlay || { echo 'R6_NATIVE_INIT=MOUNT_FAILED' >/dev/console; exec /sbin/init; }
+mkdir -p /overlay/upper /overlay/work /newroot/oldroot
+if ! mount -t overlay overlay -o lowerdir=/,upperdir=/overlay/upper,workdir=/overlay/work /newroot; then
+    echo 'R6_NATIVE_INIT=OVERLAY_FAILED' >/dev/console
+    exec /sbin/init
+fi
+for name in proc sys run tmp; do
+    mkdir -p "/newroot/$name"
+    mount -o move "/$name" "/newroot/$name" || { echo "R6_NATIVE_INIT=MOVE_${name}_FAILED" >/dev/console; exec /sbin/init; }
+done
+mkdir -p /newroot/overlay
+mount -o move /overlay /newroot/overlay || { echo 'R6_NATIVE_INIT=MOVE_OVERLAY_FAILED' >/dev/console; exec /sbin/init; }
+# initramfs rootfs cannot be pivot_root'd; chroot into the mounted overlay instead.
+mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || :
+printf 'r6-native-overlay-v1\n' > /newroot/etc/xkeenwrt-r6-native-overlay
+chmod 644 /newroot/etc/xkeenwrt-r6-native-overlay
+echo R6_NATIVE_OVERLAY=READY >/dev/console 2>/dev/null || :
+exec busybox chroot /newroot /sbin/init

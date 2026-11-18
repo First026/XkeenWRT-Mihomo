@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# build-validator.sh verifies this local image's immutable ID before use.
+FROM xkeen-openwrt-vm:25.12.6
+RUN --mount=type=bind,source=protocol-test,target=/tmp/protocol-test,ro \
+    --mount=type=bind,source=xkeenwrt-validate,target=/tmp/xkeenwrt-validate,ro \
+    --mount=type=bind,source=xkeenwrt-validate-lab,target=/tmp/xkeenwrt-validate-lab,ro \
+    --mount=type=bind,source=xkeenwrt-validate-production,target=/tmp/xkeenwrt-validate-production,ro \
+    --mount=type=bind,source=requests,target=/tmp/requests,ro \
+    --mount=type=bind,source=mihomo,target=/tmp/mihomo,ro \
+    echo '8f70595f3a6eec3112e007450a1a600153904deffa52ab368712342583cb387c  /guest/bzImage' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && gzip -dc /guest/rootfs.cpio.gz | cpio -id --quiet && \
+    mkdir -p /guestroot/usr/libexec/xkeenwrt /guestroot/usr/libexec/xkeenwrt-integration /guestroot/workspace/XkeenWRT-Mihomo/validator/target/x86_64-unknown-linux-musl/debug && \
+    cp /tmp/protocol-test /guestroot/usr/libexec/xkeenwrt-integration/protocol-test && \
+    cp /tmp/xkeenwrt-validate /guestroot/workspace/XkeenWRT-Mihomo/validator/target/x86_64-unknown-linux-musl/debug/xkeenwrt-validate && \
+    cp /tmp/xkeenwrt-validate-lab /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate && \
+    cp /tmp/mihomo /guestroot/usr/libexec/xkeenwrt/mihomo && \
+    cp /tmp/xkeenwrt-validate-production /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate-production && \
+    cp -r /tmp/requests /guestroot/usr/libexec/xkeenwrt-integration/requests && \
+    printf 'xkeenwrt-validator-lab-v1\n' > /guestroot/etc/xkeenwrt-isolation-lab && \
+    find . -print0 | cpio --null -o -H newc | gzip -1 > /guest/rootfs.cpio.gz && rm -rf /guestroot

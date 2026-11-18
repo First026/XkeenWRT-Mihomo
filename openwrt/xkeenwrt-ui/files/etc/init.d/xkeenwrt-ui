@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=91
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/bin/xkeenwrt-ui serve
+    # Optional root-owned router setting for the pinned Mihomo downloader.
+    # No HTTP request can supply or change this value.
+    if command -v uci >/dev/null 2>&1; then
+        download_proxy="$(uci -q get xkeenwrt.download.https_proxy 2>/dev/null || true)"
+        newline='
+'
+        case "$download_proxy" in
+            http://*|https://*)
+                if [ "${#download_proxy}" -le 2048 ]; then
+                    case "$download_proxy" in
+                        *"$newline"*) ;;
+                        *) procd_set_param env "HTTPS_PROXY=$download_proxy" "https_proxy=$download_proxy" ;;
+                    esac
+                fi
+                ;;
+        esac
+        unset download_proxy newline
+    fi
+    procd_set_param respawn
+    procd_close_instance
+}

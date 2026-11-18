@@ -1,0 +1,7 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM python@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+RUN --mount=type=secret,id=proxy_ca,required=true \
+    cp /run/secrets/proxy_ca /usr/local/share/ca-certificates/proxy.crt && update-ca-certificates && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends 'gcc=4:12.2.0-3' 'musl-tools=1.2.3-1' libc6-dev && \
+    rm -f /usr/local/share/ca-certificates/proxy.crt && update-ca-certificates --fresh && rm -rf /var/lib/apt/lists/*

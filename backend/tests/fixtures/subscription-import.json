@@ -1,0 +1,164 @@
+[
+  {
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?security=reality&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=01234567&sni=example.org&type=grpc&serviceName=0123#synthetic",
+    "node": {
+      "name": "synthetic",
+      "type": "vless",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "packet-encoding": "xudp",
+      "encryption": "none",
+      "network": "grpc",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "servername": "example.org",
+      "reality-opts": {
+        "public-key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "short-id": "01234567",
+        "support-x25519mlkem768": true
+      },
+      "grpc-opts": {
+        "grpc-service-name": "0123"
+      }
+    }
+  },
+  {
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?security=tls&type=ws&path=%2Fws&host=host.example&sni=on&alpn=h2%2Chttp%2F1.1#off",
+    "node": {
+      "name": "off",
+      "type": "vless",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "packet-encoding": "xudp",
+      "encryption": "none",
+      "network": "ws",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "alpn": [
+        "h2",
+        "http/1.1"
+      ],
+      "servername": "on",
+      "ws-opts": {
+        "path": "/ws",
+        "headers": {
+          "Host": "host.example"
+        }
+      }
+    }
+  },
+  {
+    "uri": "trojan://01234567@vpn.example.invalid:443?security=tls&sni=example.org#trojan",
+    "node": {
+      "name": "trojan",
+      "type": "trojan",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "password": "01234567",
+      "network": "tcp",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "sni": "example.org"
+    }
+  },
+  {
+    "uri": "ss://YWVzLTEyOC1nY206MDEyMzQ1Njc=@vpn.example.invalid:443#ss",
+    "node": {
+      "name": "ss",
+      "type": "ss",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "cipher": "aes-128-gcm",
+      "password": "01234567"
+    }
+  },
+  {
+    "uri": "hy2://01234567@vpn.example.invalid:443?sni=example.org&obfs=salamander&obfs-password=0000123#hy2",
+    "node": {
+      "name": "hy2",
+      "type": "hysteria2",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "password": "01234567",
+      "sni": "example.org",
+      "obfs": "salamander",
+      "obfs-password": "0000123"
+    }
+  },
+  {
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJ2cG4uZXhhbXBsZS5pbnZhbGlkIiwicG9ydCI6IjQ0MyIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiYWlkIjoiMCIsInNjeSI6ImF1dG8iLCJuZXQiOiJ3cyIsInR5cGUiOiJub25lIiwiaG9zdCI6Im9uIiwicGF0aCI6Ii93cyIsInRscyI6InRscyIsInNuaSI6ImV4YW1wbGUub3JnIn0=",
+    "node": {
+      "name": "vmess",
+      "type": "vmess",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "alterId": 0,
+      "cipher": "auto",
+      "network": "ws",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "servername": "example.org",
+      "ws-opts": {
+        "path": "/ws",
+        "headers": {
+          "Host": "on"
+        }
+      }
+    }
+  },
+  {
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?type=tcp&security=reality&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=01234567&sni=example.org&spx=%2F&headerType=none#synthetic-reality",
+    "node": {
+      "name": "synthetic-reality",
+      "type": "vless",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "packet-encoding": "xudp",
+      "encryption": "none",
+      "network": "tcp",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "servername": "example.org",
+      "reality-opts": {
+        "public-key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "short-id": "01234567",
+        "support-x25519mlkem768": true
+      }
+    }
+  },
+  {
+    "case": "3x-ui-reality-mlkem-true",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true&type=tcp#synthetic-3x-ui",
+    "node": {
+      "name": "synthetic-3x-ui",
+      "type": "vless",
+      "server": "vpn.example.invalid",
+      "port": 443,
+      "udp": true,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "packet-encoding": "xudp",
+      "encryption": "none",
+      "flow": "xtls-rprx-vision",
+      "network": "tcp",
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "servername": "example.org",
+      "reality-opts": {
+        "public-key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "short-id": "01234567",
+        "support-x25519mlkem768": true
+      }
+    }
+  }
+]

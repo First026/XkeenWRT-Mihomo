@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM xkeen-openwrt-vm-arm64-isolation:25.12.6
+RUN --mount=type=bind,source=production,target=/tmp/production,ro \
+    --mount=type=bind,source=lab,target=/tmp/lab,ro \
+    --mount=type=bind,source=requests,target=/tmp/requests,ro \
+    echo '2b9ce48df5536e993ee691339057828488e4a31be9c2bb5d3f6120f1135fcbb0  /guest/Image' | sha256sum -c - && \
+    mkdir /guestroot && cd /guestroot && cpio -id --quiet < /guest/rootfs.cpio && \
+    echo '022da41e03ce70641a2f50c485b4f69ade8f1c7aeeece2cf1ec45c614a029441  /guestroot/usr/libexec/xkeenwrt-lab/mihomo' | sha256sum -c - && \
+    mkdir -p /guestroot/usr/libexec/xkeenwrt /guestroot/usr/libexec/xkeenwrt-integration && \
+    cp /tmp/production /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate-production && \
+    cp /tmp/lab /guestroot/usr/libexec/xkeenwrt/xkeenwrt-validate && \
+    mv /guestroot/usr/libexec/xkeenwrt-lab/mihomo /guestroot/usr/libexec/xkeenwrt/mihomo && \
+    cp -r /tmp/requests /guestroot/usr/libexec/xkeenwrt-integration/requests && \
+    find . -print0 | cpio --null -o -H newc > /guest/rootfs.cpio && rm -rf /guestroot

@@ -1,0 +1,10 @@
+mode: rule
+proxies:
+  - name: fixture-ssh
+    type: ssh
+    server: 192.0.2.1
+    port: 22
+    username: fixture
+    private-key: /data/key.pem
+rules:
+  - MATCH,DIRECT

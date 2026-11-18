@@ -1,0 +1,68 @@
+[
+  {
+    "case": "invalid-empty",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "invalid-1",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=1&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "invalid-0",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=0&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "invalid-TRUE",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=TRUE&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "invalid-invalid",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=invalid&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "invalid-true%20",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true%20&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "tls-without-reality",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=tls&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true&type=tcp#synthetic-3x-ui",
+    "issue": "incompatible_value",
+    "position": 9
+  },
+  {
+    "case": "duplicate-true",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true&support-x25519mlkem768=true&type=tcp#synthetic-3x-ui",
+    "issue": "duplicate_parameter",
+    "position": 10
+  },
+  {
+    "case": "duplicate-false",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true&support-x25519mlkem768=false&type=tcp#synthetic-3x-ui",
+    "issue": "duplicate_parameter",
+    "position": 10
+  },
+  {
+    "case": "duplicate-mixed-case",
+    "uri": "vless://00000000-0000-4000-8000-000000000001@vpn.example.invalid:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&security=reality&sid=01234567&sni=example.org&spx=%2F&support-x25519mlkem768=true&Support-X25519MLKEM768=false&type=tcp#synthetic-3x-ui",
+    "issue": "duplicate_parameter",
+    "position": 10
+  },
+  {
+    "case": "trojan-context",
+    "uri": "trojan://synthetic@vpn.example.invalid:443?security=tls&support-x25519mlkem768=true",
+    "issue": "unsupported_parameter",
+    "position": 2
+  }
+]

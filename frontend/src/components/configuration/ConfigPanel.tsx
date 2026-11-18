@@ -1,0 +1,1423 @@
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  IconBox,
+  IconBoltFilled,
+  IconCheck,
+  IconChevronDown,
+  IconChevronUp,
+  IconCode,
+  IconDeviceFloppy,
+  IconDotsFilled,
+  IconExternalLinkFilled,
+  IconEye,
+  IconEyeOff,
+  IconFilePlus,
+  IconFileText,
+  IconFileUpload,
+  IconLink,
+  IconListDetails,
+  IconPencil,
+  IconRefresh,
+  IconRoute,
+  IconSearch,
+  IconTrash,
+  IconX,
+} from '@tabler/icons-react'
+import * as jsyaml from 'js-yaml'
+import { useCallback, useEffect, useMemo, useRef, useState, memo, type ReactNode } from 'react'
+import { apiCall, capitalize, clashFetch, getFileLanguage } from '../../lib/api'
+import { LazyBoundary, lazyLoad, useLazyMount } from '../../lib/loader'
+import {
+  runMassTask,
+  summarizeFanOut,
+  targetLabel,
+  filterAuthBlockedTargets,
+  REMOTE_AUTH_UNSUPPORTED,
+} from '../../lib/multi-routers/actions'
+import { LOCAL_ROUTER_ID } from '../../lib/multi-routers/model'
+import { useRoutersStore } from '../../lib/multi-routers/store'
+import { syncClashApiPort, useAppContext, useConnectionsSync, useModalContext, useSettings } from '../../lib/store'
+import type { Config } from '../../lib/types'
+import { cn } from '../../lib/utils'
+import { parse as parseJsonc } from 'jsonc-parser'
+import { MassConfirmDialog } from '../log/multi-routers/MassConfirmDialog'
+import { BackupsModal } from '../modals/Backups'
+import { ProvidersModal } from '../modals/Providers'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '../ui/context-menu'
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '../ui/input-group'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
+import type { CodeMirrorRef } from './CodeMirror'
+
+const GuiRouting = lazyLoad(() => import('./xray/GuiRouting'), 'GuiRouting')
+const GuiLog = lazyLoad(() => import('./xray/GuiLog'), 'GuiLog')
+const GuiOutbounds = lazyLoad(() => import('./xray/GuiOutbounds'), 'GuiOutbounds')
+const ConnectionsPanel = lazyLoad(() => import('./mihomo/Connections'), 'ConnectionsPanel')
+const SelectorsPanel = lazyLoad(() => import('./mihomo/Selectors'), 'SelectorsPanel')
+import { DnsPanel } from './mihomo/DnsPanel'
+import { Kbd } from '../ui/kbd'
+const CodeMirrorEditorLazy = lazyLoad(() => import('./CodeMirror'), 'CodeMirrorEditor')
+
+const BackupsModalContainer = memo(function BackupsModalContainer({ onRefreshConfigs }: { onRefreshConfigs: () => Promise<unknown> }) {
+  const { modals, dispatch } = useModalContext()
+  const mounted = useLazyMount(modals.showBackupsModal)
+  const handleOpenChange = useCallback(
+    (open: boolean) => dispatch({ type: 'SHOW_MODAL', modal: 'showBackupsModal', show: open }),
+    [dispatch]
+  )
+  if (!mounted) return null
+  return <BackupsModal open={modals.showBackupsModal} onOpenChange={handleOpenChange} onRefreshConfigs={onRefreshConfigs} />
+})
+
+type ClashMode = 'rule' | 'global' | 'direct'
+type ApiResult = { success: boolean; error?: string }
+
+const HOT_RELOAD_UNAVAILABLE = 'Hot reload unavailable'
+
+const isXkeenFile = (file: string) => file.startsWith('/opt/etc/xkeen')
+
+const findNeighborFile = (configs: Config[], removedFile: string, isAvailable: (file: string) => boolean) => {
+  const group = configs.filter((config) => isXkeenFile(config.file) === isXkeenFile(removedFile))
+  const removedIndex = group.findIndex((config) => config.file === removedFile)
+  if (removedIndex < 0) return undefined
+  const previous = group
+    .slice(0, removedIndex)
+    .reverse()
+    .find((config) => isAvailable(config.file))
+  const following = group.slice(removedIndex + 1).find((config) => isAvailable(config.file))
+  return (previous ?? following)?.file
+}
+type ProvidersModalKind = 'rules' | 'proxies'
+
+const TOGGLE_ALL_SELECTORS_EVENT = 'mihomo:toggle-all-selectors'
+const SHOW_HIDDEN_SELECTORS_KEY = 'showHiddenSelectors'
+const profileIdFromFile = (file: string) => file.split('/').pop()?.replace(/\.(yaml|yml)$/i, '') ?? ''
+
+interface Props {
+  onOpenImport: () => void
+  onOpenImportAmnezia: () => void
+  onOpenTemplate: () => void
+  onOpenGeoScan: () => void
+  onOpenRouteTest: () => void
+  onOpenBackups: () => void
+  onRefreshConfigs: () => Promise<Config[]>
+  editorRef: React.RefObject<CodeMirrorRef | null>
+  configActionsRef: React.RefObject<{ switchTab: (index: number) => void; getActiveIndex: () => number }>
+  /** OpenWrt-owned draft transaction. Bypasses the legacy config PUT/restart path. */
+  onSaveConfig?: (config: Config, content: string) => Promise<void>
+  /** OpenWrt-owned validated manual apply; network interception is separate. */
+  onApplyConfig?: (config: Config, content: string) => Promise<void>
+  onRefreshProvider?: (kind: 'proxy' | 'rule', name: string) => Promise<void>
+  onLoadProviderContent?: (kind: 'proxy' | 'rule', name: string) => Promise<string>
+  onSaveProviderContent?: (kind: 'proxy' | 'rule', name: string, content: string) => Promise<void>
+  onProviderEditable?: (kind: 'proxy' | 'rule', name: string) => boolean
+  onAddProvider?: (kind: 'proxy' | 'rule', name: string, url: string, file: File | null, behavior: string) => Promise<void>
+  onActiveFileChange?: (file: string) => void
+  networkControls?: ReactNode
+}
+
+interface ConfigTabProps {
+  config: Config
+  currentCore: string
+  showToast: (msg: string, type?: 'success' | 'error') => void
+  onRefreshConfigs: () => Promise<Config[]>
+  withContextMenu?: boolean
+  onHideFile?: (file: string) => void
+}
+
+type DialogState =
+  | { type: 'create'; dir: string; isLst: boolean; anchorFile: string }
+  | { type: 'rename'; file: string }
+  | { type: 'delete'; file: string }
+  | null
+
+function ConfigTab({ config, currentCore, showToast, onRefreshConfigs, onHideFile, withContextMenu = false }: ConfigTabProps) {
+  const [dialogData, setDialogData] = useState<DialogState>(null)
+  const [popoverOpen, setPopoverOpen] = useState(false)
+
+  const inputRef = useRef<HTMLInputElement>(null)
+  const pendingInputFocusRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
+
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768
+  const isCoreMihomo = currentCore === 'mihomo'
+
+  const openDialog = (value: NonNullable<DialogState>) => {
+    pendingInputFocusRef.current = value.type !== 'delete'
+    setDialogData(value)
+    setPopoverOpen(true)
+  }
+
+  const closeDialog = () => setPopoverOpen(false)
+
+  const fileExt = useMemo(() => {
+    if (!dialogData || dialogData.type === 'delete') return ''
+    if (dialogData.type === 'rename') return dialogData.file.match(/(\.[^.]+)$/)?.[1] ?? ''
+    return dialogData.isLst ? '.lst' : isCoreMihomo ? '.yaml' : '.json'
+  }, [dialogData, isCoreMihomo])
+
+  async function commitDialog() {
+    if (!dialogData) return
+    const val = inputValue.trim()
+    if (!val && dialogData.type !== 'delete') return
+    const profileId = dialogData.type === 'rename'
+      ? profileIdFromFile(dialogData.file)
+      : dialogData.type === 'delete'
+        ? profileIdFromFile(dialogData.file)
+        : ''
+    const validId = /^[A-Za-z0-9_-]{1,64}$/
+    try {
+      if (dialogData.type === 'create') {
+        if (!validId.test(val)) throw new Error('Имя профиля: латинские буквы, цифры, _ и - (до 64 символов).')
+        const source = 'proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n'
+        await apiCall('PUT', `profiles/${encodeURIComponent(val)}`, { source, expected_revision: null })
+        showToast(`Файл "${val}.yaml" создан`)
+      } else if (dialogData.type === 'rename') {
+        if (profileId === 'config') throw new Error('Основной профиль нельзя переименовать.')
+        if (!validId.test(val)) throw new Error('Имя профиля: латинские буквы, цифры, _ и - (до 64 символов).')
+        await apiCall('POST', `profiles/${encodeURIComponent(profileId)}/rename`, {
+          new_id: val,
+          expected_revision: config.revision,
+        })
+        showToast(`Файл переименован в "${val}.yaml"`)
+      } else {
+        if (profileId === 'config') throw new Error('Основной профиль нельзя удалить.')
+        await apiCall('DELETE', `profiles/${encodeURIComponent(profileId)}`, { expected_revision: config.revision })
+        showToast(`Файл "${profileId}.yaml" удалён`)
+      }
+      await onRefreshConfigs()
+      closeDialog()
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Не удалось изменить профиль.', 'error')
+    }
+  }
+
+  const isProtected = config.file.endsWith('/config.yaml') || config.file === 'config.yaml'
+
+  const tabsTrigger = (
+    <TabsTrigger value={config.file} className="dark:data-[state=active]:bg-input-background! relative data-[state=active]:bg-white!">
+      {config.file
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '')}
+      {config.isDirty && <span className="absolute top-0.75 right-0.75 h-1.5 w-1.5 rounded-full bg-amber-400" />}
+    </TabsTrigger>
+  )
+
+  if (!withContextMenu)
+    return (
+      <Tooltip>
+        <TooltipTrigger render={<span className="inline-flex">{tabsTrigger}</span>} />
+        <TooltipContent className="text-[13px]">{config.file}</TooltipContent>
+      </Tooltip>
+    )
+
+  return (
+    <Popover
+      open={popoverOpen}
+      onOpenChange={(open) => {
+        if (!open) setPopoverOpen(false)
+      }}
+    >
+      <ContextMenu>
+        <ContextMenuTrigger className="contents">
+          <Tooltip>
+            <PopoverTrigger render={<TooltipTrigger render={<span className="inline-flex">{tabsTrigger}</span>} />} />
+            <TooltipContent className="text-[13px]">{config.file}</TooltipContent>
+          </Tooltip>
+        </ContextMenuTrigger>
+        <ContextMenuContent
+          onCloseAutoFocus={(e) => {
+            if (pendingInputFocusRef.current) {
+              e.preventDefault()
+              pendingInputFocusRef.current = false
+              requestAnimationFrame(() => inputRef.current?.focus())
+            }
+          }}
+        >
+          <ContextMenuItem
+            onSelect={() => {
+              const dir = config.file.substring(0, config.file.lastIndexOf('/'))
+              setInputValue('')
+              openDialog({ type: 'create', dir, isLst: config.file.endsWith('.lst'), anchorFile: config.file })
+            }}
+          >
+            <IconFilePlus /> Создать файл
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={isProtected}
+            onSelect={() => {
+              const name =
+                config.file
+                  .split('/')
+                  .pop()
+                  ?.replace(/\.[^.]+$/, '') ?? ''
+              setInputValue(name)
+              openDialog({ type: 'rename', file: config.file })
+            }}
+          >
+            <IconPencil /> Переименовать
+          </ContextMenuItem>
+          {onHideFile && (
+            <ContextMenuItem onSelect={() => onHideFile(config.file)}>
+              <IconEyeOff /> Скрыть файл
+            </ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem disabled={isProtected} variant="destructive" onSelect={() => openDialog({ type: 'delete', file: config.file })}>
+            <IconTrash /> Удалить файл
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <PopoverContent align="start" className="w-auto min-w-64" avoidCollisions={!isMobile}>
+        {dialogData?.type === 'delete' ? (
+          <>
+            <p className="text-sm font-medium">Удалить «{config.file.split('/').pop()}»?</p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button size="sm" variant="outline" onClick={closeDialog}>
+                Отмена
+              </Button>
+              <Button size="sm" variant="destructive" onClick={commitDialog}>
+                Удалить
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-sm font-medium">{dialogData?.type === 'create' ? 'Создать файл' : 'Переименовать файл'}</p>
+            <InputGroup>
+              <InputGroupInput
+                ref={inputRef}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && commitDialog()}
+                placeholder="Имя файла"
+              />
+              {fileExt && (
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText>{fileExt}</InputGroupText>
+                </InputGroupAddon>
+              )}
+            </InputGroup>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={closeDialog}>
+                Отмена
+              </Button>
+              <Button size="sm" onClick={commitDialog}>
+                {dialogData?.type === 'create' ? 'Создать' : 'Переименовать'}
+              </Button>
+            </div>
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+export function ConfigPanel({
+  onOpenImport,
+  onOpenImportAmnezia,
+  onOpenTemplate,
+  onOpenGeoScan,
+  onOpenRouteTest,
+  onOpenBackups,
+  onRefreshConfigs,
+  editorRef,
+  configActionsRef,
+  onSaveConfig,
+  onApplyConfig,
+  onRefreshProvider,
+  onLoadProviderContent,
+  onSaveProviderContent,
+  networkControls,
+  onProviderEditable,
+  onAddProvider,
+  onActiveFileChange,
+}: Props) {
+  const { state, dispatch, showToast } = useAppContext({ includeConfigs: true })
+  const { configs, isConfigsLoading, currentCore, serviceStatus, clashApiPort, clashApiSecret, clashApiUnix } = state
+  const guiRouting = useSettings((s) => s.guiRouting)
+  const guiLog = useSettings((s) => s.guiLog)
+  const guiOutbounds = useSettings((s) => s.guiOutbounds)
+  const multiRouter = useSettings((s) => s.multiRouter)
+  const closeConnsOnApply = useSettings((s) => s.closeConnectionsOnApply)
+  const hiddenConfigFiles = useSettings((s) => s.hiddenConfigFiles)
+  const applyTargets = useRoutersStore((s) => s.applyTargets)
+  const getMassTargets = () => {
+    if (!multiRouter) return [LOCAL_ROUTER_ID]
+    return applyTargets.length > 0 ? applyTargets : [LOCAL_ROUTER_ID]
+  }
+
+  const isRunning = serviceStatus === 'running'
+  const isPending = serviceStatus === 'pending'
+  const activeClashApiPort = isRunning ? clashApiPort : null
+  const activeClashApiUnix = isRunning ? clashApiUnix : null
+
+  const isCoreMihomo = currentCore === 'mihomo'
+
+  useConnectionsSync(isCoreMihomo ? activeClashApiPort : null, clashApiSecret, serviceStatus, activeClashApiUnix)
+
+  const [activeConfigFile, setActiveConfigFile] = useState<string>(() => localStorage.getItem('lastSelectedTab') ?? '')
+  const activeConfigIndex = useMemo(() => {
+    if (!configs.length) return 0
+    const idx = configs.findIndex((c) => c.file === activeConfigFile)
+    if (idx >= 0 && !hiddenConfigFiles.includes(activeConfigFile)) return idx
+    const firstVisible = configs.findIndex((c) => !hiddenConfigFiles.includes(c.file))
+    return firstVisible >= 0 ? firstVisible : 0
+  }, [configs, activeConfigFile, hiddenConfigFiles])
+  const [validationState, setValidationState] = useState<{ isValid: boolean; error?: string } | null>(null)
+
+  const [isEditorMounted, setIsEditorMounted] = useState(false)
+
+  const [activePanel, setActivePanel] = useState<'selectors' | 'connections' | 'config' | 'dns'>('selectors')
+  const [mountedPanels, setMountedPanels] = useState<Set<string>>(() => new Set(['selectors', 'config']))
+  const [mode, setMode] = useState<ClashMode>('rule')
+  const [allSelectorsCollapsed, setAllSelectorsCollapsed] = useState(false)
+  const [showHiddenSelectors, setShowHiddenSelectors] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SHOW_HIDDEN_SELECTORS_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const [providersModalKind, setProvidersModalKind] = useState<ProvidersModalKind | null>(null)
+  const [isProvidersModalOpen, setIsProvidersModalOpen] = useState(false)
+  const mountProvidersModal = useLazyMount(isProvidersModalOpen)
+  const currentPanel = isRunning || activePanel === 'dns' ? activePanel : 'config'
+  const [massConfirm, setMassConfirm] = useState<{
+    title: string
+    description: string
+    targets: string[]
+    action: () => void
+  } | null>(null)
+
+  const configsRef = useRef(configs)
+  const activeIndexRef = useRef(activeConfigIndex)
+  const viewStatesRef = useRef<Record<string, any>>({})
+
+  useEffect(() => {
+    configsRef.current = configs
+  }, [configs])
+  useEffect(() => {
+    activeIndexRef.current = activeConfigIndex
+    onActiveFileChange?.(configs[activeConfigIndex]?.file ?? '')
+  }, [activeConfigIndex, configs, onActiveFileChange])
+
+  const saveViewState = useCallback(
+    (file: string, isDirty?: boolean) => {
+      if (!editorRef.current) return
+      const state = editorRef.current.saveViewState()
+      if (state) {
+        viewStatesRef.current[file] = state
+        if (!isDirty) {
+          try {
+            localStorage.setItem(`editor-folds:${file}`, JSON.stringify(state.folds ?? []))
+          } catch {
+            /* */
+          }
+        }
+      }
+    },
+    [editorRef]
+  )
+
+  useEffect(() => {
+    function onBeforeUnload() {
+      const currentCfg = configsRef.current[activeIndexRef.current]
+      if (currentCfg) saveViewState(currentCfg.file, currentCfg.isDirty)
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [saveViewState])
+
+  const configFilenamesKey = configs.map((c) => c.file).join(',')
+
+  useEffect(() => {
+    if (!isCoreMihomo || (!activeClashApiPort && !activeClashApiUnix)) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      if (cancelled) return
+      clashFetch<{ mode?: ClashMode }>(activeClashApiPort ?? '', 'configs', { secret: clashApiSecret, unix: activeClashApiUnix })
+        .then((data) => {
+          if (data.mode) setMode(data.mode)
+        })
+        .catch(() => {})
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [isCoreMihomo, activeClashApiPort, clashApiSecret, activeClashApiUnix])
+
+  const changeMode = useCallback(
+    async (newMode: ClashMode) => {
+      if (newMode === mode || (!activeClashApiPort && !activeClashApiUnix)) return
+      try {
+        await clashFetch(activeClashApiPort ?? '', 'configs', {
+          method: 'PATCH', secret: clashApiSecret, unix: activeClashApiUnix, body: { mode: newMode },
+        })
+        const confirmed = await clashFetch<{ mode?: ClashMode }>(activeClashApiPort ?? '', 'configs', {
+          secret: clashApiSecret, unix: activeClashApiUnix,
+        })
+        if (confirmed.mode !== newMode) throw new Error('Ядро не подтвердило смену режима')
+        setMode(confirmed.mode)
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Не удалось изменить режим', 'error')
+      }
+    },
+    [activeClashApiPort, clashApiSecret, activeClashApiUnix, mode]
+  )
+
+  const activeConfig = configs[activeConfigIndex]
+  const fileLanguage = activeConfig ? getFileLanguage(activeConfig.file) : null
+  const isJsonOrYaml = fileLanguage === 'json' || fileLanguage === 'yaml'
+  const canSave = !!(activeConfig?.isDirty && validationState?.isValid)
+  const canApply = !!(activeConfig && validationState?.isValid && !isPending && (onApplyConfig || (canSave && isRunning)))
+  const canFormat = !!(isJsonOrYaml && validationState?.isValid)
+
+  const loadConfigIntoEditor = useCallback(
+    (config: Config) => {
+      if (!editorRef.current) return
+      editorRef.current.setSavedContent(config.savedContent)
+      const inMemory = viewStatesRef.current[config.file]
+      editorRef.current.setValue(config.content, config.savedContent, inMemory?.history)
+      editorRef.current.setLanguage(getFileLanguage(config.file))
+      editorRef.current.validate(config.file)
+      if (inMemory) {
+        editorRef.current.restoreViewState(inMemory)
+      } else {
+        const folds = (() => {
+          try {
+            return JSON.parse(localStorage.getItem(`editor-folds:${config.file}`) ?? 'null')
+          } catch {
+            return null
+          }
+        })()
+        if (folds) editorRef.current.restoreViewState({ anchor: 0, head: 0, scrollTop: 0, scrollLeft: 0, folds })
+      }
+    },
+    [editorRef]
+  )
+
+  useEffect(() => {
+    const config = configsRef.current[activeConfigIndex]
+    if (editorRef.current && config) {
+      loadConfigIntoEditor(config)
+    }
+  }, [activeConfigIndex, configFilenamesKey, loadConfigIntoEditor, editorRef])
+
+  const savedContentKey = activeConfig?.savedContent
+  useEffect(() => {
+    const config = configsRef.current[activeConfigIndex]
+    if (editorRef.current && config) {
+      loadConfigIntoEditor(config)
+    }
+  }, [activeConfigIndex, savedContentKey, loadConfigIntoEditor, editorRef])
+
+  const handleEditorReady = useCallback(() => {
+    setIsEditorMounted(true)
+    const config = configsRef.current[activeIndexRef.current]
+    if (config && editorRef.current) loadConfigIntoEditor(config)
+  }, [loadConfigIntoEditor, editorRef])
+
+  const handleContentChange = useCallback(
+    (content: string, isDirty: boolean) => {
+      const index = activeIndexRef.current
+      if (index < 0) return
+      const current = configsRef.current[index]
+      if (!current) return
+      if (current.content === content && current.isDirty === isDirty) return
+      dispatch({ type: 'UPDATE_CONFIG_DIRTY', index, isDirty, content })
+    },
+    [dispatch]
+  )
+
+  const handleValidationChange = useCallback((isValid: boolean, error?: string) => {
+    setValidationState((prev) => (prev?.isValid === isValid && prev?.error === error ? prev : { isValid, error }))
+  }, [])
+
+  const openProvidersModal = useCallback((kind: ProvidersModalKind) => {
+    setProvidersModalKind(kind)
+    setIsProvidersModalOpen(true)
+  }, [])
+
+  const handleProvidersModalOpenChange = useCallback((open: boolean) => setIsProvidersModalOpen(open), [])
+
+  const refreshConfigsAndEditor = useCallback(async () => {
+    const currentCfg = configsRef.current[activeIndexRef.current]
+    if (currentCfg) saveViewState(currentCfg.file, currentCfg.isDirty)
+
+    const targetFile = currentCfg?.file ?? activeConfigFile
+    const previousConfigs = configsRef.current
+    const nextConfigs = await onRefreshConfigs()
+    const target = nextConfigs.find((config) => config.file === targetFile)
+    const neighborFile = findNeighborFile(
+      previousConfigs,
+      targetFile,
+      (file) => !hiddenConfigFiles.includes(file) && nextConfigs.some((config) => config.file === file)
+    )
+    const nextConfig =
+      target && !hiddenConfigFiles.includes(target.file)
+        ? target
+        : (nextConfigs.find((config) => config.file === neighborFile) ??
+          nextConfigs.find((config) => !hiddenConfigFiles.includes(config.file)) ??
+          nextConfigs[0])
+
+    if (nextConfig) {
+      if (nextConfig.file !== activeConfigFile) {
+        setActiveConfigFile(nextConfig.file)
+        localStorage.setItem('lastSelectedTab', nextConfig.file)
+      }
+      loadConfigIntoEditor(nextConfig)
+    }
+
+    return nextConfigs
+  }, [activeConfigFile, hiddenConfigFiles, loadConfigIntoEditor, onRefreshConfigs, saveViewState])
+
+  const switchTab = useCallback(
+    (index: number) => {
+      if (index === activeIndexRef.current) return
+      const currentCfg = configsRef.current[activeIndexRef.current]
+      if (currentCfg) saveViewState(currentCfg.file, currentCfg.isDirty)
+
+      const file = configsRef.current[index]?.file ?? ''
+      setActiveConfigFile(file)
+      localStorage.setItem('lastSelectedTab', file)
+    },
+    [saveViewState]
+  )
+
+  useEffect(() => {
+    configActionsRef.current = { switchTab, getActiveIndex: () => activeIndexRef.current }
+  }, [configActionsRef, switchTab])
+
+  async function executeSave(targets: string[], cfg: Config, content: string, targetIndex: number) {
+    const results = await runMassTask(targets, async (_id, baseUrl) => {
+      const result = await apiCall<{ success: boolean; error?: string }>('PUT', 'configs', { file: cfg.file, content }, { baseUrl })
+      if (!result.success) throw new Error(result.error || 'ошибка сохранения')
+    })
+
+    const localOk = results.find((r) => r.id === LOCAL_ROUTER_ID)?.ok
+    if (targets.includes(LOCAL_ROUTER_ID) ? localOk : results.some((r) => r.ok)) {
+      const currentConfigs = configsRef.current
+      let finalIndex = currentConfigs.findIndex((c) => c.file === cfg.file)
+      if (finalIndex < 0) finalIndex = targetIndex
+      dispatch({ type: 'SAVE_CONFIG', index: finalIndex, content })
+      if (configsRef.current[activeIndexRef.current]?.file === cfg.file) {
+        editorRef.current?.setSavedContent(content)
+        saveViewState(cfg.file, false)
+      }
+    }
+
+    const summary = summarizeFanOut(results)
+    const fileName = cfg.file.split('/').pop()
+    if (results.length <= 1) {
+      showToast(
+        summary.fail === 0 ? `Файл "${fileName}" сохранен` : errorToastText(summary.body, 'Ошибка сохранения'),
+        summary.fail === 0 ? 'success' : 'error'
+      )
+    } else {
+      showToast(
+        {
+          title: summary.fail === 0 ? `Файл "${fileName}" сохранен` : 'Сохранение завершено с ошибками',
+          body: summary.body,
+        },
+        summary.fail === 0 ? 'success' : 'error'
+      )
+    }
+  }
+
+  async function resolveMassTargets(): Promise<string[] | null> {
+    const selected = getMassTargets()
+    const { allowed, blocked } = await filterAuthBlockedTargets(selected)
+    if (blocked.length > 0) {
+      showToast(
+        {
+          title: 'Пропущены панели с авторизацией',
+          body: `${blocked.map(targetLabel).join(', ')}. ${REMOTE_AUTH_UNSUPPORTED}`,
+        },
+        'error'
+      )
+    }
+    if (allowed.length === 0) return null
+    return allowed
+  }
+
+  async function saveCurrentConfig(force = false) {
+    const targetIndex = activeIndexRef.current
+    const cfg = configsRef.current[targetIndex]
+    if (!cfg || !editorRef.current) return
+    const content = editorRef.current.getValue()
+    if (!content.trim() && !cfg.file.endsWith('.lst')) return showToast('Конфигурация пустая', 'error')
+    if (!editorRef.current.isValid(cfg.file)) return showToast('Файл содержит ошибки', 'error')
+    if (!force && isGuiActive(cfg) && hasComments(cfg.savedContent)) {
+      dispatch({ type: 'SET_PENDING_SAVE_ACTION', action: () => saveCurrentConfig(true) })
+      dispatch({ type: 'SHOW_MODAL', modal: 'showCommentsWarningModal', show: true })
+      return
+    }
+
+    if (onSaveConfig) {
+      try {
+        await onSaveConfig(cfg, content)
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Не удалось сохранить черновик', 'error')
+      }
+      return
+    }
+
+    const targets = await resolveMassTargets()
+    if (!targets) return
+    const hasRemote = targets.some((t) => t !== LOCAL_ROUTER_ID)
+    if (hasRemote) {
+      setMassConfirm({
+        title: 'Массовое сохранение',
+        description: 'Конфиг будет сохранён на выбранных роутерах:',
+        targets: targets.map(targetLabel),
+        action: () => void executeSave(targets, cfg, content, targetIndex),
+      })
+      return
+    }
+
+    await executeSave(targets, cfg, content, targetIndex)
+  }
+
+  function restartActionFor(cfg: Config, content: string) {
+    const lang = getFileLanguage(cfg.file)
+    return !isXkeenFile(cfg.file) && (lang === 'json' || lang === 'yaml') && !hasCriticalChanges(cfg.savedContent, content, lang)
+      ? 'softRestart'
+      : 'hardRestart'
+  }
+
+  async function applyToHost(baseUrl: string | null, cfg: Config, content: string) {
+    let core = currentCore
+    if (baseUrl) {
+      try {
+        const ctrl = await apiCall<{ success?: boolean; currentCore?: string }>('GET', 'control', undefined, { baseUrl })
+        if (ctrl?.currentCore) core = ctrl.currentCore
+      } catch {
+        /* keep local core */
+      }
+    }
+
+    const isHotReload = core === 'mihomo' && !isXkeenFile(cfg.file)
+
+    let validate = ''
+    if (!isXkeenFile(cfg.file) && (core === 'mihomo' || core === 'xray')) {
+      validate = `?validate=${core}`
+      if (core === 'mihomo' && closeConnsOnApply) validate += '&closeConns=true'
+    }
+    const saveResult = await apiCall<ApiResult>(
+      'PUT',
+      `configs${validate}`,
+      { file: cfg.file, content },
+      {
+        baseUrl,
+      }
+    )
+    const hotReloadUnavailable = saveResult.error === HOT_RELOAD_UNAVAILABLE
+    if (!saveResult.success && !hotReloadUnavailable) {
+      throw new Error(
+        saveResult.error === 'Validation failed'
+          ? `Ошибка валидации ${capitalize(core)}: проверьте журнал`
+          : saveResult.error || 'Ошибка сохранения'
+      )
+    }
+
+    if (hotReloadUnavailable) showToast('Clash API недоступен, выполняем полный рестарт', 'warning')
+
+    const action = hotReloadUnavailable
+      ? 'hardRestart'
+      : isHotReload
+        ? hasCriticalChanges(cfg.savedContent, content, 'yaml')
+          ? 'hardRestart'
+          : null
+        : restartActionFor(cfg, content)
+    if (!action) return false
+
+    const restartResult = await apiCall<ApiResult>('POST', 'control', { action, core }, { baseUrl })
+    if (!restartResult?.success) throw new Error(restartResult?.error || 'ошибка перезапуска')
+    return true
+  }
+
+  async function executeApply(targets: string[], cfg: Config, content: string, targetIndex: number) {
+    dispatch({ type: 'SET_SERVICE_STATUS', status: 'pending', pendingText: 'Применение...' })
+    const isMihomoHotReload = currentCore === 'mihomo' && !isXkeenFile(cfg.file)
+    let localRestarted = false
+    const results = await runMassTask(targets, async (id, baseUrl) => {
+      const restarted = await applyToHost(baseUrl, cfg, content)
+      if (id === LOCAL_ROUTER_ID) localRestarted = restarted
+    })
+
+    const localOk = results.find((r) => r.id === LOCAL_ROUTER_ID)?.ok
+    if (targets.includes(LOCAL_ROUTER_ID) ? localOk : results.some((r) => r.ok)) {
+      const currentConfigs = configsRef.current
+      let finalIndex = currentConfigs.findIndex((c) => c.file === cfg.file)
+      if (finalIndex < 0) finalIndex = targetIndex
+      dispatch({ type: 'SAVE_CONFIG', index: finalIndex, content })
+      if (configsRef.current[activeIndexRef.current]?.file === cfg.file) {
+        editorRef.current?.setSavedContent(content)
+        saveViewState(cfg.file, false)
+      }
+    }
+
+    const summary = summarizeFanOut(results)
+    if (results.length <= 1) {
+      showToast(summary.fail === 0 ? 'Изменения применены' : errorToastText(summary.body), summary.fail === 0 ? 'success' : 'error')
+    } else {
+      showToast(
+        {
+          title: summary.fail === 0 ? 'Изменения применены' : 'Применение завершено с ошибками',
+          body: summary.body,
+        },
+        summary.fail === 0 ? 'success' : 'error'
+      )
+    }
+
+    if (targets.includes(LOCAL_ROUTER_ID)) {
+      const nextStatus =
+        localOk === false && !(isMihomoHotReload && !localRestarted) ? 'stopped' : isRunning || localOk ? 'running' : 'stopped'
+      dispatch({
+        type: 'SET_SERVICE_STATUS',
+        status: nextStatus,
+      })
+      if (localOk !== false) syncClashApiPort(200)
+    } else {
+      dispatch({ type: 'SET_SERVICE_STATUS', status: isRunning ? 'running' : 'stopped' })
+    }
+  }
+
+  async function saveAndApply(force = false) {
+    const targetIndex = activeIndexRef.current
+    const cfg = configsRef.current[targetIndex]
+    if (!cfg || !editorRef.current) return
+    const content = editorRef.current.getValue()
+    if (!content.trim() && !cfg.file.endsWith('.lst')) return showToast('Файл пустой', 'error')
+    if (!editorRef.current.isValid(cfg.file)) return showToast('Файл содержит ошибки', 'error')
+    if (!force && isGuiActive(cfg) && hasComments(cfg.savedContent)) {
+      dispatch({ type: 'SET_PENDING_SAVE_ACTION', action: () => saveAndApply(true) })
+      dispatch({ type: 'SHOW_MODAL', modal: 'showCommentsWarningModal', show: true })
+      return
+    }
+
+    if (onApplyConfig) {
+      try {
+        await onApplyConfig(cfg, content)
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Не удалось применить профиль', 'error')
+      }
+      return
+    }
+
+    const targets = await resolveMassTargets()
+    if (!targets) return
+    const hasRemote = targets.some((t) => t !== LOCAL_ROUTER_ID)
+    if (hasRemote) {
+      setMassConfirm({
+        title: 'Массовое применение',
+        description: 'Конфиг будет сохранён и применён на выбранных роутерах:',
+        targets: targets.map(targetLabel),
+        action: () => void executeApply(targets, cfg, content, targetIndex),
+      })
+      return
+    }
+
+    await executeApply(targets, cfg, content, targetIndex)
+  }
+
+  async function executeQuickBackup(targets: string[]) {
+    const results = await runMassTask(targets, async (_id, baseUrl) => {
+      const result = await apiCall<{ success: boolean; error?: string }>('PUT', 'backup', undefined, { baseUrl })
+      if (!result.success) throw new Error(result.error || 'ошибка бэкапа')
+    })
+    const summary = summarizeFanOut(results)
+    if (results.length <= 1) {
+      showToast(summary.fail === 0 ? 'Быстрый бэкап создан' : errorToastText(summary.body), summary.fail === 0 ? 'success' : 'error')
+    } else {
+      showToast(
+        {
+          title: summary.fail === 0 ? 'Быстрый бэкап создан' : 'Бэкап завершён с ошибками',
+          body: summary.body,
+        },
+        summary.fail === 0 ? 'success' : 'error'
+      )
+    }
+  }
+
+  async function quickBackup() {
+    const targets = await resolveMassTargets()
+    if (!targets) return
+    const hasRemote = targets.some((t) => t !== LOCAL_ROUTER_ID)
+    if (hasRemote) {
+      setMassConfirm({
+        title: 'Быстрый бэкап',
+        description: 'Бэкап конфигураций будет создан на выбранных роутерах:',
+        targets: targets.map(targetLabel),
+        action: () => void executeQuickBackup(targets),
+      })
+      return
+    }
+    void executeQuickBackup(targets)
+  }
+
+  function isGuiActive(cfg: Config) {
+    const f = cfg.file.toLowerCase()
+    return (f.includes('routing') && guiRouting) || (f.includes('log') && guiLog) || (f.includes('outbound') && guiOutbounds)
+  }
+
+  const fileForGui = activeConfig?.file
+  const contentForGui = activeConfig?.savedContent
+  const isRoutingGui = useMemo(() => {
+    if (!guiRouting || !fileForGui) return false
+    if (!fileForGui.toLowerCase().includes('routing')) return false
+    try {
+      const j = parseJsonc(contentForGui || '')
+      return j && typeof j.routing === 'object'
+    } catch {
+      return false
+    }
+  }, [guiRouting, fileForGui, contentForGui])
+
+  const isLogGui = useMemo(() => {
+    if (!guiLog || !fileForGui) return false
+    if (!fileForGui.toLowerCase().includes('log')) return false
+    try {
+      const j = parseJsonc(contentForGui || '')
+      return j && typeof j.log === 'object'
+    } catch {
+      return false
+    }
+  }, [guiLog, fileForGui, contentForGui])
+
+  const isOutboundsGui = useMemo(() => {
+    if (!guiOutbounds || !fileForGui || isRoutingGui || isLogGui) return false
+    try {
+      const j = parseJsonc(contentForGui || '')
+      return Array.isArray(j?.outbounds)
+    } catch {
+      return false
+    }
+  }, [guiOutbounds, fileForGui, contentForGui, isRoutingGui, isLogGui])
+
+  const isAnyGui = isRoutingGui || isLogGui || isOutboundsGui
+
+  const coreConfigs = configs.filter((c) => !isXkeenFile(c.file) && !hiddenConfigFiles.includes(c.file))
+  const xkeenConfigs = configs.filter((c) => isXkeenFile(c.file) && !hiddenConfigFiles.includes(c.file))
+
+  const hideConfigFile = useCallback(
+    async (file: string) => {
+      const visibleCount = configs.filter((c) => c.file !== file && !hiddenConfigFiles.includes(c.file)).length
+      if (visibleCount === 0) {
+        showToast('Нельзя скрыть последний файл', 'error')
+        return
+      }
+      const next = hiddenConfigFiles.includes(file) ? hiddenConfigFiles : [...hiddenConfigFiles, file]
+      try {
+        localStorage.setItem('xkeenwrt.hiddenConfigFiles', JSON.stringify(next))
+        dispatch({ type: 'SET_SETTINGS', settings: { hiddenConfigFiles: next } })
+        showToast('Файл успешно скрыт. Скрытый файл можно вернуть в настройках', 'success')
+        if (activeConfigFile === file) {
+          const nextFile = findNeighborFile(configs, file, (candidate) => !next.includes(candidate))
+          if (nextFile) {
+            setActiveConfigFile(nextFile)
+            localStorage.setItem('lastSelectedTab', nextFile)
+          }
+        }
+      } catch (e: any) {
+        showToast(e.message, 'error')
+      }
+    },
+    [configs, hiddenConfigFiles, activeConfigFile, dispatch, showToast]
+  )
+
+  const isMihomo = isCoreMihomo
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768
+  const usefulLinks = [
+    { title: 'Инструкция XKeen', url: 'https://github.com/Corvus-Malus/XKeen/' },
+    { title: 'FAQ XKeen', url: 'https://jameszero.net/faq-xkeen.htm' },
+    { title: 'Документация Xray', url: 'https://xtls.github.io/ru/config' },
+    { title: 'Документация Mihomo', url: 'https://wiki.metacubex.one/ru/config/general' },
+  ]
+
+  return (
+    <TooltipProvider delayDuration={700} timeout={0}>
+      <>
+        <div className="border-border bg-card flex shrink-0 flex-col overflow-hidden rounded-xl border md:min-h-[760px] md:flex-1">
+          <div className={cn('flex shrink-0 flex-col gap-2 px-3 pt-3 sm:px-4 sm:pt-4 md:flex-row md:items-start')}>
+            <div className="flex min-w-0 shrink-0 items-center gap-2">
+              {isMihomo ? (
+                <div className="min-w-0 scrollbar-none overflow-x-auto md:overflow-x-visible [&::-webkit-scrollbar]:hidden">
+                  <Tabs
+                    value={currentPanel}
+                    onValueChange={(value) => {
+                      const panel = value as 'config' | 'selectors' | 'connections' | 'dns'
+                      setActivePanel(panel)
+                      setMountedPanels((prev) => (prev.has(panel) ? prev : new Set([...prev, panel])))
+                    }}
+                    className="w-max flex-row!"
+                  >
+                    <TabsList variant="line" className="mb-2 w-max shrink-0 gap-3 p-0 whitespace-nowrap md:mb-0">
+                      <TabsTrigger value="selectors" className="p-0 text-sm font-semibold md:text-lg" disabled={!isRunning}>
+                        Селекторы
+                      </TabsTrigger>
+                      <TabsTrigger value="connections" className="p-0 text-sm font-semibold md:text-lg" disabled={!isRunning}>
+                        Соединения
+                      </TabsTrigger>
+                      <TabsTrigger value="dns" className="p-0 text-sm font-semibold md:text-lg">
+                        DNS
+                      </TabsTrigger>
+                      <TabsTrigger value="config" className="p-0 text-sm font-semibold md:text-lg">
+                        Конфигурация
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+              ) : (
+                <h2 className="shrink-0 text-lg font-semibold select-none">Конфигурация</h2>
+              )}
+            </div>
+
+            {isMihomo && currentPanel === 'connections' && (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-muted-foreground text-xs">Режим маршрутизации</span>
+                <Select
+                  value={mode}
+                  items={{ direct: 'DIRECT', rule: 'RULE', global: 'GLOBAL' }}
+                  onValueChange={(value) => changeMode(value as ClashMode)}
+                >
+                  <SelectTrigger className="w-30">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="direct">DIRECT</SelectItem>
+                      <SelectItem value="rule">RULE</SelectItem>
+                      <SelectItem value="global">GLOBAL</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {isMihomo && currentPanel === 'selectors' && (
+              <div className="ml-auto flex items-center gap-1.5">
+                <Button variant="outline" className="text-[13px]" onClick={() => openProvidersModal('proxies')}>
+                  <IconListDetails data-icon="inline-start" />
+                  Подписки
+                </Button>
+                <Button variant="outline" className="text-[13px]" onClick={() => openProvidersModal('rules')}>
+                  <IconListDetails data-icon="inline-start" />
+                  Рулсеты
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        aria-label={showHiddenSelectors ? 'Скрыть скрытые селекторы' : 'Показывать скрытые селекторы'}
+                        aria-pressed={showHiddenSelectors}
+                        className={cn(showHiddenSelectors && 'border-[#60a5fa] text-blue-400')}
+                        onClick={() => {
+                          setShowHiddenSelectors((prev) => {
+                            try {
+                              localStorage.setItem(SHOW_HIDDEN_SELECTORS_KEY, prev ? '0' : '1')
+                            } catch {
+                              /* */
+                            }
+                            return !prev
+                          })
+                        }}
+                      >
+                        {showHiddenSelectors ? <IconEyeOff /> : <IconEye />}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>{showHiddenSelectors ? 'Скрыть скрытые' : 'Показывать скрытые'}</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        aria-label={allSelectorsCollapsed ? 'Развернуть все селекторы' : 'Свернуть все селекторы'}
+                        onClick={() =>
+                          window.dispatchEvent(
+                            new CustomEvent(TOGGLE_ALL_SELECTORS_EVENT, { detail: { collapsed: !allSelectorsCollapsed } })
+                          )
+                        }
+                      >
+                        {allSelectorsCollapsed ? <IconChevronDown /> : <IconChevronUp />}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>{allSelectorsCollapsed ? 'Развернуть все' : 'Свернуть все'}</TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+
+            {(!isMihomo || currentPanel === 'config') && (
+              <div className="scrollbar-none overflow-x-auto overflow-y-hidden [-ms-overflow-style:none] md:ml-auto [&::-webkit-scrollbar]:hidden">
+                {isConfigsLoading ? (
+                  <div className="flex gap-2">
+                    {[525, 310].map((w) => (
+                      <Skeleton key={w} className="h-9 gap-0.5 rounded-lg p-0.75" style={{ width: w }} />
+                    ))}
+                  </div>
+                ) : (
+                  <Tabs
+                    value={activeConfig?.file || ''}
+                    onValueChange={(value) => {
+                      const index = configs.findIndex((c) => c.file === value)
+                      if (index >= 0) switchTab(index)
+                    }}
+                    className="flex-row!"
+                  >
+                    {coreConfigs.length > 0 && (
+                      <TabsList className="shrink-0">
+                        {coreConfigs.map((config) => (
+                          <ConfigTab
+                            key={config.file}
+                            config={config}
+                            currentCore={currentCore}
+                            showToast={showToast}
+                            onRefreshConfigs={refreshConfigsAndEditor}
+                            onHideFile={(file) => void hideConfigFile(file)}
+                            withContextMenu
+                          />
+                        ))}
+                      </TabsList>
+                    )}
+                    {xkeenConfigs.length > 0 && (
+                      <TabsList className="shrink-0">
+                        {xkeenConfigs.map((config) => (
+                          <ConfigTab
+                            key={config.file}
+                            config={config}
+                            currentCore={currentCore}
+                            showToast={showToast}
+                            onRefreshConfigs={refreshConfigsAndEditor}
+                          />
+                        ))}
+                      </TabsList>
+                    )}
+                  </Tabs>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="relative min-h-175! md:min-h-0 md:flex-1">
+            {isEditorMounted && activeConfig && isRoutingGui && (
+              <GuiRouting editorRef={editorRef} configs={configs} activeConfigIndex={activeConfigIndex} />
+            )}
+            {isEditorMounted && activeConfig && isLogGui && (
+              <GuiLog editorRef={editorRef} configs={configs} activeConfigIndex={activeConfigIndex} />
+            )}
+            {isEditorMounted && activeConfig && isOutboundsGui && (
+              <GuiOutbounds editorRef={editorRef} configs={configs} activeConfigIndex={activeConfigIndex} />
+            )}
+
+            {isMihomo && (
+              <>
+                {mountedPanels.has('selectors') && (
+                  <div className={cn(currentPanel !== 'selectors' && 'hidden')}>
+                    <LazyBoundary>
+                      <SelectorsPanel
+                        clashApiPort={(activeClashApiPort ?? '') as string}
+                        mode={mode}
+                        clashApiSecret={clashApiSecret ?? null}
+                        clashApiUnix={activeClashApiUnix ?? null}
+                        showHiddenSelectors={showHiddenSelectors}
+                        onCollapsedStateChange={setAllSelectorsCollapsed}
+                      />
+                    </LazyBoundary>
+                  </div>
+                )}
+                {mountedPanels.has('connections') && (
+                  <div className={cn(currentPanel !== 'connections' && 'hidden')}>
+                    <LazyBoundary>
+                      <ConnectionsPanel
+                        clashApiPort={(activeClashApiPort ?? '') as string}
+                        clashApiSecret={clashApiSecret ?? null}
+                        clashApiUnix={activeClashApiUnix ?? null}
+                      />
+                    </LazyBoundary>
+                  </div>
+                )}
+                {mountedPanels.has('dns') && (
+                  <div className={cn(currentPanel !== 'dns' && 'hidden')}>
+                    <LazyBoundary>
+                      <DnsPanel
+                        content={editorRef.current?.getValue() ?? configs[activeConfigIndex]?.content ?? ''}
+                        onApply={onApplyConfig && configs[activeConfigIndex] ? (content) => onApplyConfig(configs[activeConfigIndex], content) : undefined}
+                        onChange={(content) => {
+                          if (!editorRef.current) {
+                            showToast('Редактор конфигурации ещё не готов.', 'error')
+                            return
+                          }
+                          editorRef.current.replaceAll(content)
+                        }}
+                      >{networkControls}</DnsPanel>
+                    </LazyBoundary>
+                  </div>
+                )}
+              </>
+            )}
+
+            {!isConfigsLoading && (!isMihomo || mountedPanels.has('config')) && (
+              <div
+                className={cn(
+                  'absolute inset-0',
+                  isAnyGui && 'pointer-events-none invisible opacity-0',
+                  isMihomo && currentPanel !== 'config' && 'hidden'
+                )}
+              >
+                <CodeMirrorEditorLazy
+                  ref={editorRef}
+                  onContentChange={handleContentChange}
+                  onValidationChange={handleValidationChange}
+                  onReady={handleEditorReady}
+                  onSave={() => saveCurrentConfig()}
+                />
+              </div>
+            )}
+          </div>
+
+          {(!isMihomo || currentPanel === 'config') && (
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-1.5 px-3 pb-3 sm:px-4 sm:pb-4">
+              <div className="min-w-0 text-xs">
+                {isConfigsLoading ? (
+                  <Skeleton className="h-4 w-30" />
+                ) : validationState && activeConfig && isJsonOrYaml ? (
+                  <span
+                    className={cn(
+                      'flex items-center gap-1.5 text-[13px] tracking-wide',
+                      validationState.isValid ? 'text-green-400/90' : 'text-red-500'
+                    )}
+                  >
+                    {validationState.isValid ? <IconCheck size={15} /> : <IconX size={15} />}
+                    {validationState.isValid
+                      ? `${fileLanguage?.toUpperCase()} валиден`
+                      : `Ошибка: ${validationState.error || 'Файл невалиден'}`}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {isConfigsLoading ? (
+                  <div className="flex gap-1.5">
+                    {[120, 117, 96, 100].map((w) => (
+                      <Skeleton key={w} className="h-9" style={{ width: w }} />
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="default"
+                            disabled={!canApply}
+                            className="bg-green-600 text-white hover:bg-green-700"
+                            onClick={() => saveAndApply()}
+                          >
+                            <IconRefresh data-icon="inline-start" /> Применить
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>{onApplyConfig ? 'Проверить и применить профиль; остановленное ядро не запускается' : 'Сохранить и перезапустить'}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button size="default" disabled={!canSave} onClick={() => saveCurrentConfig()}>
+                            <IconDeviceFloppy data-icon="inline-start" /> Сохранить
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>
+                        Сохранить файл <Kbd>Ctrl+S</Kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button variant="outline" disabled={!canFormat} onClick={() => editorRef.current?.format()}>
+                            <IconCode data-icon="inline-start" /> <span className="hidden sm:inline">Формат</span>
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>
+                        Форматировать файл <Kbd>Shift+Alt+F</Kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={
+                          <Button variant="outline">
+                            <IconDotsFilled data-icon="inline-start" /> <span className="hidden sm:inline">Утилиты</span>
+                          </Button>
+                        }
+                      />
+                      <DropdownMenuContent align="end" className="min-w-64">
+                        <DropdownMenuGroup>
+                          <DropdownMenuLabel>Утилиты</DropdownMenuLabel>
+                          <DropdownMenuItem onClick={onOpenImport}>
+                            <IconLink /> Добавить подключение
+                          </DropdownMenuItem>
+                          {isCoreMihomo && (
+                            <DropdownMenuItem onClick={onOpenImportAmnezia}>
+                              <IconFileUpload /> Импорт AmneziaWG
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem onClick={onOpenTemplate}>
+                            <IconFileText /> Шаблоны конфигураций
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="whitespace-nowrap"
+                            onClick={(e) => {
+                              if ((e.target as HTMLElement).closest('[data-quick-backup]')) void quickBackup()
+                              else onOpenBackups()
+                            }}
+                          >
+                            <IconBox /> Бэкапы конфигураций
+                            <Button
+                              variant="outline"
+                              size="icon-xs"
+                              data-quick-backup
+                              aria-label="Быстрый бэкап"
+                              title="Быстрый бэкап"
+                              tabIndex={-1}
+                              className="ml-auto size-5 rounded-[min(var(--radius-md),6px)]"
+                            >
+                              <IconBoltFilled className="size-3.5" />
+                            </Button>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={onOpenGeoScan}>
+                            <IconSearch /> Скан геофайлов
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={onOpenRouteTest}>
+                            <IconRoute /> Проверка маршрута
+                          </DropdownMenuItem>
+                        </DropdownMenuGroup>
+                        <DropdownMenuSeparator />
+                        {isMobile ? (
+                          <DropdownMenuGroup>
+                            <DropdownMenuLabel>Полезные ссылки</DropdownMenuLabel>
+                            {usefulLinks.map((link) => (
+                              <DropdownMenuItem key={link.url} onClick={() => window.open(link.url, '_blank', 'noopener,noreferrer')}>
+                                <IconExternalLinkFilled /> {link.title}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuGroup>
+                        ) : (
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <IconExternalLinkFilled /> Полезные ссылки
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="min-w-55">
+                              {usefulLinks.map((link) => (
+                                <DropdownMenuItem key={link.url} onClick={() => window.open(link.url, '_blank', 'noopener,noreferrer')}>
+                                  <IconExternalLinkFilled /> {link.title}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        {providersModalKind && mountProvidersModal && (
+          <ProvidersModal
+            open={isProvidersModalOpen}
+            kind={providersModalKind}
+            clashApiPort={activeClashApiPort ?? ''}
+            clashApiSecret={clashApiSecret ?? null}
+            clashApiUnix={activeClashApiUnix ?? null}
+            onRefreshProvider={onRefreshProvider}
+            onLoadProviderContent={onLoadProviderContent}
+            onSaveProviderContent={onSaveProviderContent}
+            onProviderEditable={onProviderEditable}
+            onAddProvider={onAddProvider}
+            onOpenChange={handleProvidersModalOpenChange}
+          />
+        )}
+        <BackupsModalContainer onRefreshConfigs={refreshConfigsAndEditor} />
+        {massConfirm && (
+          <MassConfirmDialog
+            open={!!massConfirm}
+            onOpenChange={(open) => !open && setMassConfirm(null)}
+            title={massConfirm.title}
+            description={massConfirm.description}
+            targets={massConfirm.targets}
+            onConfirm={massConfirm.action}
+          />
+        )}
+      </>
+    </TooltipProvider>
+  )
+}
+
+function errorToastText(body: string, fallbackPrefix = 'Ошибка') {
+  return /^ошибк/i.test(body) ? body : `${fallbackPrefix}: ${body}`
+}
+
+function hasComments(content: string) {
+  return /(?<!:)\/\/|\/\*[\s\S]*?\*\//.test(content) || /^\s*#/m.test(content)
+}
+
+function hasCriticalChanges(oldContent: string, newContent: string, language: string): boolean {
+  try {
+    if (language === 'yaml') {
+      const o = jsyaml.load(oldContent) as Record<string, unknown>
+      const n = jsyaml.load(newContent) as Record<string, unknown>
+      return [
+        'listeners',
+        'redir-port',
+        'tproxy-port',
+        'external-controller',
+        'external-controller-tls',
+        'external-controller-unix',
+        'external-controller-pipe',
+        'external-controller-cors',
+        'external-controller-routing-mark',
+        'external-ui',
+        'external-ui-url',
+        'external-ui-name',
+        'external-doh-server',
+        'secret',
+        'tls',
+      ].some((f) => JSON.stringify(o?.[f]) !== JSON.stringify(n?.[f]))
+    }
+    if (language === 'json') {
+      const o = parseJsonc(oldContent)
+      const n = parseJsonc(newContent)
+      const clean = (arr: Record<string, unknown>[]) =>
+        (arr || []).map((item) => Object.fromEntries(Object.entries(item).filter(([k]) => k !== 'sniffing')))
+      return JSON.stringify(clean(o?.inbounds)) !== JSON.stringify(clean(n?.inbounds))
+    }
+  } catch {
+    return false
+  }
+  return false
+}

@@ -1,0 +1,18 @@
+  - name: awg-v3
+    type: wireguard
+    ip: 10.99.0.2/32
+    private-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+    udp: true
+    mtu: 1280
+    peers:
+      - server: 127.0.0.1
+        port: 51822
+        public-key: zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=
+        allowed-ips:
+          - 10.99.0.1/32
+    amnezia-wg-option:
+      version: 3
+      jc: 4
+      jmin: 40
+      jmax: 70
+      header-protection-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
