@@ -24,6 +24,9 @@ pub struct Scope {
     pub management_ipv4: Ipv4Addr,
     pub management_macs: Vec<String>,
     pub management_ipv6: Vec<Ipv6Addr>,
+    /// Same meaning as `Manifest::management_channel` (decision 024).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_channel: Option<crate::ManagementChannel>,
     pub local_ipv4: Vec<String>,
     pub local_ipv6: Vec<String>,
 }
@@ -491,8 +494,12 @@ fn contains_v4(cidr: &str, ip: Ipv4Addr) -> bool {
 }
 fn valid_scope_dns(scope: &Scope, dns: &DnsEvidence) -> bool {
     if let Some(lan_scope) = &scope.lan_scope
-        && (!crate::valid_lan_scope(lan_scope, scope.lan_ipv4, scope.management_ipv4)
-            || scope.lan_cidrs.len() != 1
+        && (!crate::valid_whole_lan_management(
+            lan_scope,
+            scope.lan_ipv4,
+            scope.management_ipv4,
+            scope.management_channel,
+        ) || scope.lan_cidrs.len() != 1
             || crate::lan_network(&scope.lan_cidrs[0]).as_ref() != Some(lan_scope)
             || scope.selected_ipv4 != scope.management_ipv4
             || !scope.selected_mac.is_empty()
@@ -534,14 +541,20 @@ fn valid_scope_dns(scope: &Scope, dns: &DnsEvidence) -> bool {
             .lan_cidrs
             .iter()
             .any(|v| contains_v4(v, scope.lan_ipv4))
-        || !scope
-            .lan_cidrs
-            .iter()
-            .any(|v| contains_v4(v, scope.selected_ipv4))
-        || !scope
-            .lan_cidrs
-            .iter()
-            .any(|v| contains_v4(v, scope.management_ipv4))
+        || (scope.management_channel.is_some()
+            && (scope.lan_scope.is_none()
+                || scope.selected_ipv4 != scope.management_ipv4
+                || !crate::tailscale_ipv4(scope.management_ipv4)))
+        || (scope.management_channel.is_none()
+            && !scope
+                .lan_cidrs
+                .iter()
+                .any(|v| contains_v4(v, scope.selected_ipv4)))
+        || (scope.management_channel.is_none()
+            && !scope
+                .lan_cidrs
+                .iter()
+                .any(|v| contains_v4(v, scope.management_ipv4)))
         || scope.local_ipv4.is_empty()
         || scope.local_ipv4.len() > 256
         || scope.local_ipv6.is_empty()
@@ -718,30 +731,34 @@ impl NetworkEvidence {
         {
             return Err(fail());
         }
-        let (selected_mac, management_macs, management_ipv6) = if let Some(scope) =
-            &scope_m.lan_scope
-        {
-            if addresses.lan_cidrs.len() != 1
-                || crate::lan_network(&addresses.lan_cidrs[0]).as_ref() != Some(scope)
-                || !crate::valid_lan_scope(scope, addresses.lan_address, scope_m.management_ipv4)
-            {
-                return Err(fail());
-            }
-            (String::new(), Vec::new(), Vec::new())
-        } else {
-            let (selected, management) = inventory::resolve_client_and_management_mac(
-                input.neighbours,
-                input.leases,
-                lan,
-                scope_m.source_ipv4,
-                scope_m.management_ipv4,
-                input.now_unix,
-            )
-            .map_err(|_| fail())?;
-            let management_ipv6 =
-                inventory::ipv6_for_mac(input.neighbours, lan, &management).map_err(|_| fail())?;
-            (selected, vec![management], management_ipv6)
-        };
+        let (selected_mac, management_macs, management_ipv6) =
+            if let Some(scope) = &scope_m.lan_scope {
+                if addresses.lan_cidrs.len() != 1
+                    || crate::lan_network(&addresses.lan_cidrs[0]).as_ref() != Some(scope)
+                    || !crate::valid_whole_lan_management(
+                        scope,
+                        addresses.lan_address,
+                        scope_m.management_ipv4,
+                        scope_m.management_channel,
+                    )
+                {
+                    return Err(fail());
+                }
+                (String::new(), Vec::new(), Vec::new())
+            } else {
+                let (selected, management) = inventory::resolve_client_and_management_mac(
+                    input.neighbours,
+                    input.leases,
+                    lan,
+                    scope_m.source_ipv4,
+                    scope_m.management_ipv4,
+                    input.now_unix,
+                )
+                .map_err(|_| fail())?;
+                let management_ipv6 = inventory::ipv6_for_mac(input.neighbours, lan, &management)
+                    .map_err(|_| fail())?;
+                (selected, vec![management], management_ipv6)
+            };
         let dns = inventory::dnsmasq_facts(input.dnsconfig).map_err(|_| fail())?;
         let has_loopback = dns.has_loopback_upstream();
         let proxy_inodes = if has_loopback {
@@ -804,6 +821,7 @@ impl NetworkEvidence {
             management_ipv4: scope_m.management_ipv4,
             management_macs,
             management_ipv6,
+            management_channel: scope_m.management_channel,
             local_ipv4: local4.into_iter().collect(),
             local_ipv6: local6.into_iter().collect(),
         };
@@ -2169,6 +2187,7 @@ mod foreign_counter_tests {
             source_ipv4: "192.0.2.2".parse().unwrap(),
             management_ipv4: "192.0.2.3".parse().unwrap(),
             management_ipv6: vec![],
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into()],
             selected_ipv6: vec![],
             local_ipv6: vec!["2001:db8::/64".into()],

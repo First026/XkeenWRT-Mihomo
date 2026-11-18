@@ -57,11 +57,23 @@ export async function confirmNetworkIfPending(network: {state?:string;transactio
   await request(fetcher,'network/confirm',{transaction_id,confirm_token})
 }
 
+const REMOTE_REFUSALS = ['NETWORK_REMOTE_DNS', 'NETWORK_REMOTE_EGRESS']
+/** A Tailscale confirmation refused by the router's own probes would strand
+ * LAN clients until the 120 s deadline: remove capture now, keep the reason. */
+async function confirmOrWithdraw(network: {state?:string;transaction_id?:string;confirm_token?:string}, fetcher: typeof fetch, pause: typeof delay) {
+  try {
+    await confirmNetworkIfPending(network, fetcher)
+  } catch (error) {
+    if (error instanceof Error && REMOTE_REFUSALS.includes(error.message)) await disableGateway(fetcher, pause).catch(() => undefined)
+    throw error
+  }
+}
+
 /** One user action, one guarded LAN transaction. A fresh round trip from the
  * management client precedes confirmation; lost access leaves rescue armed. */
 export async function startLanService(fetcher: typeof fetch = fetch, pause = delay) {
   const started = await request(fetcher, 'control', { action: 'start' })
-  if (started.network?.state === 'pending') await confirmNetworkIfPending(started.network,fetcher)
+  if (started.network?.state === 'pending') await confirmOrWithdraw(started.network, fetcher, pause)
   else if (started.network?.state !== 'active') throw new Error('NOT_READY')
   return await verifyService(fetcher, true, pause)
 }
@@ -87,7 +99,7 @@ export async function stopLanService(fetcher: typeof fetch = fetch, pause = dela
 export async function restartManagedService(fetcher:typeof fetch=fetch,pause=delay) {
   for(let attempt=0;attempt<60;attempt++) {
     const result=await request(fetcher,'control',{action:'restart'})
-    if(result.network?.state==='pending') {await confirmNetworkIfPending(result.network,fetcher);return await verifyService(fetcher,true,pause)}
+    if(result.network?.state==='pending') {await confirmOrWithdraw(result.network,fetcher,pause);return await verifyService(fetcher,true,pause)}
     if(result.network?.state==='restarted') {
       const status=await request(fetcher,'control')
       if(status.stale||status.running!==true)throw new Error('NOT_READY')

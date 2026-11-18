@@ -126,6 +126,7 @@ fn valid_pilot_yields_only_owned_plan_with_exact_scope() {
         local_ipv4: vec!["192.0.2.0/24".into()],
         selected_ipv6: vec!["2001:db8::2/128".into()],
         management_ipv6: Some(vec!["2001:db8::3".parse().unwrap()]),
+        management_channel: None,
         local_ipv6: vec!["2001:db8::/64".into()],
         candidate_id: "pilot-1".into(),
         previous_table: None,
@@ -237,6 +238,7 @@ fn ipv6_selected_client_must_not_include_management_address() {
         selected_ipv6: vec!["2001:db8::2/128".into()],
         local_ipv6: vec!["2001:db8::/64".into()],
         management_ipv6: Some(vec!["2001:db8::2".parse().unwrap()]),
+        management_channel: None,
         candidate_id: "pilot".into(),
         previous_table: None,
         owner_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -284,6 +286,7 @@ fn broad_default_route_is_not_treated_as_a_local_exclusion() {
         local_ipv4: vec!["0.0.0.0/0".into()],
         selected_ipv6: vec!["2001:db8::2/128".into()],
         management_ipv6: Some(vec![]),
+        management_channel: None,
         local_ipv6: vec!["2001:db8::/64".into()],
         candidate_id: "pilot".into(),
         previous_table: None,
@@ -367,5 +370,94 @@ fn whole_lan_plan_uses_observed_subnet_and_includes_administrator_in_internet_ro
     assert!(
         Network::plan(&inventory, &policy).is_err(),
         "HTTP policy cannot expand trusted LAN scope"
+    );
+}
+
+/// A working router's whole-LAN shape; `management` is the authenticated peer.
+fn whole_lan(management: &str, channel: Option<xkeenwrt_recovery::ManagementChannel>) -> (Inventory, TrafficPolicy) {
+    let inventory = Inventory {
+        complete: true,
+        hook_topology_verified: true,
+        ethernet_like: true,
+        tproxy_available: true,
+        socket_available: true,
+        lan_ifname: Some("br-lan".into()),
+        lan_address: Some("192.0.2.1".parse().unwrap()),
+        lan_cidrs: vec!["192.0.2.1/24".into()],
+        local_ipv4: vec!["192.0.2.0/24".into()],
+        local_ipv6: vec!["fe80::/10".into()],
+        client_mac: Some(String::new()),
+        management_macs: Some(vec![]),
+        ..Default::default()
+    };
+    let policy = TrafficPolicy {
+        table: 100,
+        mark: 1,
+        mark_mask: 1,
+        priority: 10000,
+        lan_ifname: "br-lan".into(),
+        lan_address: "192.0.2.1".parse().unwrap(),
+        lan_scope: Some("192.0.2.0/24".into()),
+        client_ipv4: management.parse().unwrap(),
+        management_ipv4: management.parse().unwrap(),
+        management_ipv6: Some(vec![]),
+        management_channel: channel,
+        local_ipv4: inventory.local_ipv4.clone(),
+        local_ipv6: inventory.local_ipv6.clone(),
+        candidate_id: "synthetic-candidate".into(),
+        owner_id: "00000000-0000-4000-8000-000000000001".into(),
+        generation: 1,
+        failure_policy: Some(network::FailurePolicy::DirectOnFailure),
+        dns: Some(network::dns::DnsInventory {
+            dnsmasq_instances: 1,
+            incompatible_manager: false,
+            local_names: vec!["+.lan".into()],
+            upstreams: vec!["1.1.1.1#53".into()],
+            split_upstreams: vec![],
+            verified_loopback_chain_sha256: None,
+            bootstrap: vec!["1.1.1.1".parse().unwrap()],
+        }),
+        ..Default::default()
+    };
+    (inventory, policy)
+}
+
+#[test]
+fn tailscale_whole_lan_plan_records_the_channel_and_captures_like_a_lan_start() {
+    use xkeenwrt_recovery::ManagementChannel::Tailscale;
+    let (inventory, policy) = whole_lan("100.64.20.2", Some(Tailscale));
+    let plan = Network::plan(&inventory, &policy).expect("whole LAN started over Tailscale");
+    assert_eq!(plan.manifest().management_channel, Some(Tailscale));
+    assert_eq!(
+        plan.manifest().management_ipv4,
+        "100.64.20.2".parse::<std::net::Ipv4Addr>().unwrap()
+    );
+    let (inventory, policy) = whole_lan("192.0.2.3", None);
+    let lan = Network::plan(&inventory, &policy).unwrap();
+    assert_eq!(lan.manifest().management_channel, None);
+    assert_eq!(
+        lan.nft_batch().replace("\"192.0.2.3\"", "\"100.64.20.2\""),
+        plan.nft_batch()
+    );
+}
+
+#[test]
+fn tailscale_plan_rejects_pilot_block_policy_lan_peer_and_missing_channel() {
+    use xkeenwrt_recovery::ManagementChannel::Tailscale;
+    let (inventory, mut policy) = whole_lan("100.64.20.2", Some(Tailscale));
+    policy.failure_policy = Some(network::FailurePolicy::BlockSelectedOnFailure);
+    assert!(Network::plan(&inventory, &policy).is_err(), "block policy");
+    let (inventory, mut policy) = whole_lan("100.64.20.2", Some(Tailscale));
+    policy.lan_scope = None;
+    assert!(Network::plan(&inventory, &policy).is_err(), "pilot client");
+    let (inventory, policy) = whole_lan("192.0.2.3", Some(Tailscale));
+    assert!(
+        Network::plan(&inventory, &policy).is_err(),
+        "LAN peer with Tailscale channel"
+    );
+    let (inventory, policy) = whole_lan("100.64.20.2", None);
+    assert!(
+        Network::plan(&inventory, &policy).is_err(),
+        "Tailscale peer without channel"
     );
 }

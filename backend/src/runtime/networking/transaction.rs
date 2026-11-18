@@ -42,6 +42,10 @@ pub enum Error {
     Expired,
     Storage,
     Unhealthy,
+    /// Tailscale start: the gateway DNS did not answer (decision 024).
+    RemoteDns,
+    /// Tailscale start: no proxy node reached the probe URL (decision 024).
+    RemoteEgress,
 }
 
 /// The guard returned by lock must hold the recovery helper's shared flock.
@@ -78,6 +82,12 @@ pub trait Driver {
     /// Check the complete installed object semantics and ownership, not just its comment.
     fn verify_active(&mut self, p: &Pending) -> Result<bool, Error>;
     fn health(&mut self, p: &Pending) -> Result<bool, Error>;
+    /// Extra evidence for a generation started over Tailscale (decision 024):
+    /// the administrator is outside the LAN, so the router proves the gateway
+    /// DNS and egress itself. A LAN start has nothing to add.
+    fn remote_check(&mut self, _p: &Pending) -> Result<(), Error> {
+        Ok(())
+    }
     fn confirm(&mut self, p: &Pending) -> Result<(), Error>;
     /// Exact repeat of a durable confirmed transaction; no deadline extension.
     /// Return the durable confirmed receipt only for the same exact request.
@@ -223,6 +233,8 @@ impl<D: Driver> Coordinator<D> {
         if !self.driver.health(&p)? {
             return Err(Error::Unhealthy);
         }
+        // Probes take seconds; the deadline and fence are rechecked after them.
+        self.driver.remote_check(&p)?;
         if !(p.created_ms..p.deadline_ms).contains(&self.driver.now_ms()?) {
             return Err(Error::Expired);
         }

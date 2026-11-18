@@ -42,12 +42,39 @@ export interface ManagedInputStatus {
   explicit_selected: boolean
   trusted_bindings: Array<{ interface: string; address: string; port: number }>
 }
+/** Router-side proof for a gateway started over Tailscale (decision 024). */
+export interface RemoteCheck {
+  dns: boolean
+  egress: { state: 'ok'; node: string; delay_ms: number } | { state: 'failed'; tested: number } | { state: 'skipped' }
+  lan_clients: number | null
+}
+const count = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0
+function remoteCheckFrom(value: unknown): RemoteCheck | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const v = value as Record<string, unknown>
+  const e = v.egress as Record<string, unknown> | null | undefined
+  if (typeof v.dns !== 'boolean' || !e || typeof e !== 'object') return undefined
+  if (!(v.lan_clients === null || v.lan_clients === undefined || count(v.lan_clients))) return undefined
+  const egress: RemoteCheck['egress'] | undefined =
+    e.state === 'ok' && typeof e.node === 'string' && e.node.length <= 256 && count(e.delay_ms)
+      ? { state: 'ok', node: e.node, delay_ms: e.delay_ms }
+      : e.state === 'failed' && count(e.tested)
+        ? { state: 'failed', tested: e.tested }
+        : e.state === 'skipped'
+          ? { state: 'skipped' }
+          : undefined
+  if (!egress) return undefined
+  return { dns: v.dns, egress, lan_clients: count(v.lan_clients) ? v.lan_clients : null }
+}
 export interface ControlStatus {
   inputs?: ManagedInputStatus
   stale?: boolean
   networkState?: string
   /** Why recovery ended the last transaction Direct, when it reported one. */
   recoveryNotice?: 'SNAPSHOT_MISSING'
+  /** The current generation was started over Tailscale. */
+  managementChannel?: 'tailscale'
+  remoteCheck?: RemoteCheck
   running: boolean | null
   resumeRequestId: string | null
   activeProfileId?: string | null
@@ -74,8 +101,10 @@ export async function loadControlStatus(fetcher: typeof fetch = fetch): Promise<
 export function controlStatusFromReply(data: {
   inputs?: ManagedInputStatus | null; stale?: unknown; running?: unknown
   activeProfileId?: unknown; activeProfileRevision?: unknown; providerMetadata?: unknown
-  network?: { state?: unknown; recovery_notice?: unknown } | null; resumeRequestId?: unknown; capabilities?: unknown
+  network?: { state?: unknown; recovery_notice?: unknown; management_channel?: unknown; remote_check?: unknown } | null
+  resumeRequestId?: unknown; capabilities?: unknown
 }): ControlStatus {
+  const remoteCheck = remoteCheckFrom(data.network?.remote_check)
   return {
     ...(data.inputs && typeof data.inputs === 'object' && Array.isArray(data.inputs.trusted_bindings) ? { inputs: data.inputs as ManagedInputStatus } : {}),
     ...(data.stale === true ? { stale: true } : {}),
@@ -84,6 +113,8 @@ export function controlStatusFromReply(data: {
     ...(Array.isArray(data.providerMetadata) ? {providerMetadata: data.providerMetadata} : {}),
     ...(typeof data.network?.state === 'string' ? { networkState: data.network.state } : {}),
     ...(data.network?.recovery_notice === 'SNAPSHOT_MISSING' ? { recoveryNotice: 'SNAPSHOT_MISSING' as const } : {}),
+    ...(data.network?.management_channel === 'tailscale' ? { managementChannel: 'tailscale' as const } : {}),
+    ...(remoteCheck ? { remoteCheck } : {}),
     running: typeof data.running === 'boolean' ? data.running : null,
     resumeRequestId: isRequestId(data.resumeRequestId) ? data.resumeRequestId : null,
     capabilities: capabilitiesFrom(data.capabilities),

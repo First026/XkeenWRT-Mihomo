@@ -2,6 +2,7 @@
 //! existing transaction, confirmation and rescue contracts remain authoritative.
 use super::{Coordinator, NetworkPlanRequest, RuntimeReply, networking, validator};
 use crate::configuration::ManualCore;
+use crate::management::ManagementPeer;
 use std::{net::Ipv4Addr, path::Path};
 use xkeenwrt_recovery::State;
 
@@ -9,7 +10,7 @@ type Driver = networking::driver::OpenWrtDriver<'static, validator::ProcessValid
 const CONFIG: &str = "/etc/xkeenwrt";
 
 impl Coordinator {
-    pub(super) fn service_start(&mut self, peer_ipv4: Ipv4Addr) -> RuntimeReply {
+    pub(super) fn service_start(&mut self, peer: ManagementPeer) -> RuntimeReply {
         self.refresh_bootstrap();
         let journal = match Driver::secure_journal() {
             Ok(journal) => journal,
@@ -53,7 +54,7 @@ impl Coordinator {
                 Ok(guard) => guard,
                 Err(_) => return RuntimeReply::error("BUSY", "Network state is being updated"),
             };
-            let report = self.compatibility_report(peer_ipv4, None);
+            let report = self.compatibility_report(peer, None);
             if !report.ready {
                 let code = report
                     .issues
@@ -100,9 +101,10 @@ impl Coordinator {
             expected_revision: candidate.revision,
             candidate_id: candidate.candidate_id,
             lan_interface,
-            selected_ipv4: peer_ipv4,
-            management_ipv4: peer_ipv4,
-            peer_ipv4,
+            selected_ipv4: peer.ipv4(),
+            management_ipv4: peer.ipv4(),
+            peer_ipv4: peer.ipv4(),
+            tailscale_router: peer.overlay_router(),
             selected_ipv6: Vec::new(),
             management_ipv6: Vec::new(),
             ipv6_policy: "block_external".into(),
@@ -223,7 +225,7 @@ impl Coordinator {
         )
     }
     fn replace_gateway_candidate(
-        &mut self, profile_id: &str, revision: &str, candidate_id: &str, key: &str, peer_ipv4: Ipv4Addr,
+        &mut self, profile_id: &str, revision: &str, candidate_id: &str, key: &str, peer: ManagementPeer,
         explicit: Option<Option<profile_policy::ExplicitOverlay>>,
     ) -> RuntimeReply {
         let (lan, _, _) = match self.main_lan() {
@@ -236,9 +238,10 @@ impl Coordinator {
                 expected_revision: revision.into(),
                 candidate_id: candidate_id.into(),
                 lan_interface: lan,
-                selected_ipv4: peer_ipv4,
-                management_ipv4: peer_ipv4,
-                peer_ipv4,
+                selected_ipv4: peer.ipv4(),
+                management_ipv4: peer.ipv4(),
+                peer_ipv4: peer.ipv4(),
+                tailscale_router: peer.overlay_router(),
                 selected_ipv6: vec![],
                 management_ipv6: vec![],
                 ipv6_policy: "block_external".into(),
@@ -255,7 +258,7 @@ impl Coordinator {
         self.network_apply(id, key)
     }
     pub(super) fn service_apply(
-        &mut self, profile_id: &str, revision: &str, candidate_id: &str, key: &str, peer_ipv4: Ipv4Addr,
+        &mut self, profile_id: &str, revision: &str, candidate_id: &str, key: &str, peer: ManagementPeer,
     ) -> RuntimeReply {
         match self
             .activation
@@ -277,7 +280,7 @@ impl Coordinator {
             && j.idempotency_key == key
         {
             if networking::plans::load(&j.plan_id).is_ok_and(|p| p.manual_candidate_id == candidate_id) {
-                return self.service_start(peer_ipv4);
+                return self.service_start(peer);
             }
             return RuntimeReply::error("CONFLICT", "Pending profile binding changed");
         }
@@ -286,7 +289,7 @@ impl Coordinator {
             Err(_) => return RuntimeReply::error("STORAGE_ERROR", "Network journal unavailable"),
         };
         if active {
-            self.replace_gateway_candidate(profile_id, revision, candidate_id, key, peer_ipv4, None)
+            self.replace_gateway_candidate(profile_id, revision, candidate_id, key, peer, None)
         } else {
             self.command(super::RuntimeCommand::Apply {
                 profile_id: profile_id.into(),
@@ -296,8 +299,18 @@ impl Coordinator {
             })
         }
     }
-    pub(super) fn explicit_set(&mut self, binding: Option<super::ExplicitBinding>, peer: Ipv4Addr) -> RuntimeReply {
+    pub(super) fn explicit_set(
+        &mut self, binding: Option<super::ExplicitBinding>, peer: ManagementPeer,
+    ) -> RuntimeReply {
         self.refresh_bootstrap();
+        // HTTP/SOCKS binds a LAN address chosen by its administrator; it stays
+        // a main-LAN action. Turning it off is allowed from anywhere.
+        if binding.is_some() && !networking::compatibility::explicit_allowed(peer) {
+            return RuntimeReply::error(
+                "NETWORK_MANAGEMENT",
+                "HTTP/SOCKS включается только из основной IPv4 LAN.",
+            );
+        }
         if !self.ready || !self.native_apply_ready || !super::core::deployment_allowed() {
             return RuntimeReply::error("NOT_READY", "Native input control unavailable");
         }
@@ -308,7 +321,7 @@ impl Coordinator {
             };
             if binding.interface != lan
                 || binding.address != address
-                || !xkeenwrt_recovery::valid_lan_scope(&scope, address, peer)
+                || !xkeenwrt_recovery::valid_lan_scope(&scope, address, peer.ipv4())
             {
                 return RuntimeReply::error("INVALID", "Choose the trusted LAN binding");
             }
@@ -478,7 +491,7 @@ impl Coordinator {
         }
         Self::network_reply(serde_json::json!({"state":"explicit_updated"}))
     }
-    pub(super) fn service_restart(&mut self, peer: Ipv4Addr) -> RuntimeReply {
+    pub(super) fn service_restart(&mut self, peer: ManagementPeer) -> RuntimeReply {
         let selection = match super::inputs::load() {
             Ok(s) => s,
             Err(_) => return RuntimeReply::error("STORAGE_ERROR", "Selected inputs unavailable"),
@@ -490,7 +503,19 @@ impl Coordinator {
                 Ok(l) => l,
                 Err(m) => return RuntimeReply::error("UNSUPPORTED", m),
             };
-            if !xkeenwrt_recovery::valid_lan_scope(&scope, address, peer) {
+            // Over Tailscale only the gateway restarts (decision 024); HTTP/SOCKS
+            // is a main-LAN binding. Checked before any destructive stop.
+            let tailscale = match peer {
+                ManagementPeer::Lan { .. } => None,
+                ManagementPeer::Tailscale { .. } => networking::compatibility::current_tailscale(),
+            };
+            if !networking::compatibility::restart_allowed(
+                Some(&scope),
+                address,
+                peer,
+                tailscale,
+                selection.explicit.is_some(),
+            ) {
                 return RuntimeReply::error("UNSUPPORTED", "Restart selected inputs from the main IPv4 LAN");
             }
         }

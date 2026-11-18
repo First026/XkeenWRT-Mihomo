@@ -598,10 +598,25 @@ struct NetworkConfirmBody {
 struct NetworkDisableBody {
     idempotency_key: String,
 }
+/// The administrator of a request as the accepting listener sees it: the
+/// Tailscale listener yields a Tailscale peer, any other an IPv4 LAN peer.
+fn management_peer(app: &App, peer: SocketAddr) -> Option<crate::management::ManagementPeer> {
+    match &app.trusted_access {
+        Some(access) => access.management_peer(peer.ip()),
+        None => match peer.ip() {
+            std::net::IpAddr::V4(peer) => Some(crate::management::ManagementPeer::Lan { peer }),
+            std::net::IpAddr::V6(_) => None,
+        },
+    }
+}
 async fn network_plan(
     State(app): State<App>, axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
     Json(body): Json<NetworkPlanBody>,
 ) -> Response {
+    // Selecting a pilot client and its failure policy stays a main-LAN action.
+    if app.trusted_access.as_ref().is_some_and(|a| a.is_overlay()) {
+        return result(StatusCode::FORBIDDEN, "NETWORK_MANAGEMENT");
+    }
     let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
         return result(StatusCode::BAD_REQUEST, "INVALID");
     };
@@ -637,6 +652,7 @@ async fn network_plan(
         ipv6_policy: body.ipv6_policy,
         failure_policy: body.failure_policy,
         peer_ipv4,
+        tailscale_router: None,
     };
     runtime_request(app, crate::runtime::RuntimeCommand::NetworkPlan { request }).await
 }
@@ -669,10 +685,10 @@ async fn network_confirm(State(app): State<App>, Json(body): Json<NetworkConfirm
 async fn network_compatibility(
     State(app): State<App>, axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
 ) -> Response {
-    let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
+    let Some(peer) = management_peer(&app, peer) else {
         return result(StatusCode::BAD_REQUEST, "INVALID");
     };
-    runtime_request(app, crate::runtime::RuntimeCommand::Compatibility { peer_ipv4 }).await
+    runtime_request(app, crate::runtime::RuntimeCommand::Compatibility { peer }).await
 }
 async fn network_status(State(app): State<App>) -> Response {
     runtime_request(app, crate::runtime::RuntimeCommand::NetworkStatus).await
@@ -772,39 +788,51 @@ async fn runtime_request(app: App, command: crate::runtime::RuntimeCommand) -> R
     .await
     {
         Ok(Ok(reply)) if reply.code == "OK" => runtime_success_response(reply, explicit_resume),
-        Ok(Ok(reply)) => {
-            if reply.network.as_ref().is_some_and(|n| n.get("compatibility").is_some()) {
-                return (StatusCode::CONFLICT,Json(serde_json::json!({"success":false,"code":reply.code,"error":reply.message,"network":reply.network}))).into_response();
-            }
-            if let Some(diagnostic) = reply.diagnostic {
-                return (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(serde_json::json!({
-                        "success":false,"code":"VALIDATION_FAILED","error":diagnostic.message(),
-                        "stage":diagnostic.stage(),"diagnostic":diagnostic
-                    })),
-                )
-                    .into_response();
-            }
-            if matches!(
-                reply.code.as_str(),
-                "NETWORK_FIREWALL_CONFLICT" | "NETWORK_PORT_CONFLICT"
-            ) {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({"success":false,"code":reply.code,"error":reply.message})),
-                )
-                    .into_response();
-            }
-            let status = match reply.code.as_str() {
-                "CONFLICT" => StatusCode::CONFLICT,
-                "INVALID" => StatusCode::BAD_REQUEST,
-                _ => StatusCode::SERVICE_UNAVAILABLE,
-            };
-            result(status, &reply.code)
-        }
+        Ok(Ok(reply)) => runtime_error_response(reply),
         _ => result(StatusCode::SERVICE_UNAVAILABLE, "RUNTIME_UNAVAILABLE"),
     }
+}
+/// HTTP shape of a refused runtime command.
+fn runtime_error_response(reply: crate::runtime::RuntimeReply) -> Response {
+    // Compatibility blockers and refused Tailscale probes carry a bounded
+    // report the panel shows; their message is the runtime's own text.
+    if reply
+        .network
+        .as_ref()
+        .is_some_and(|n| n.get("compatibility").is_some() || n.get("remote_check").is_some())
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"success":false,"code":reply.code,"error":reply.message,"network":reply.network})),
+        )
+            .into_response();
+    }
+    if let Some(diagnostic) = reply.diagnostic {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "success":false,"code":"VALIDATION_FAILED","error":diagnostic.message(),
+                "stage":diagnostic.stage(),"diagnostic":diagnostic
+            })),
+        )
+            .into_response();
+    }
+    if matches!(
+        reply.code.as_str(),
+        "NETWORK_FIREWALL_CONFLICT" | "NETWORK_PORT_CONFLICT"
+    ) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"success":false,"code":reply.code,"error":reply.message})),
+        )
+            .into_response();
+    }
+    let status = match reply.code.as_str() {
+        "CONFLICT" => StatusCode::CONFLICT,
+        "INVALID" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    result(status, &reply.code)
 }
 
 fn runtime_success_response(reply: crate::runtime::RuntimeReply, explicit_resume: bool) -> Response {
@@ -843,13 +871,13 @@ async fn apply_profile(
     State(app): State<App>, Path(id): Path<String>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>, Json(req): Json<ApplyRequest>,
 ) -> Response {
-    let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
+    let Some(peer) = management_peer(&app, peer) else {
         return result(StatusCode::BAD_REQUEST, "INVALID");
     };
     runtime_request(
         app,
         crate::runtime::RuntimeCommand::ServiceApply {
-            peer_ipv4,
+            peer,
             profile_id: id,
             revision: req.expected_revision,
             candidate_id: req.candidate_id,
@@ -925,17 +953,17 @@ async fn control(
     };
     let command = match command {
         crate::runtime::RuntimeCommand::Start => {
-            let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
+            let Some(peer) = management_peer(&app, peer) else {
                 return result(StatusCode::BAD_REQUEST, "INVALID");
             };
-            crate::runtime::RuntimeCommand::ServiceStart { peer_ipv4 }
+            crate::runtime::RuntimeCommand::ServiceStart { peer }
         }
         crate::runtime::RuntimeCommand::Stop => crate::runtime::RuntimeCommand::ServiceStop,
         crate::runtime::RuntimeCommand::Restart => {
-            let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
+            let Some(peer) = management_peer(&app, peer) else {
                 return result(StatusCode::BAD_REQUEST, "INVALID");
             };
-            crate::runtime::RuntimeCommand::ServiceRestart { peer_ipv4 }
+            crate::runtime::RuntimeCommand::ServiceRestart { peer }
         }
         other => other,
     };
@@ -955,7 +983,7 @@ async fn explicit_set(
     State(app): State<App>, axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
     Json(req): Json<ExplicitRequest>,
 ) -> Response {
-    let std::net::IpAddr::V4(peer_ipv4) = peer.ip() else {
+    let Some(peer) = management_peer(&app, peer) else {
         return result(StatusCode::BAD_REQUEST, "INVALID");
     };
     if req.enabled != req.binding.is_some() {
@@ -965,7 +993,7 @@ async fn explicit_set(
         app,
         crate::runtime::RuntimeCommand::ExplicitSet {
             binding: req.binding,
-            peer_ipv4,
+            peer,
         },
     )
     .await
@@ -1934,5 +1962,38 @@ mod overlay_stream_tests {
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
         task.await.unwrap();
         assert!(capacity.try_acquire_owned().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod runtime_error_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refused_remote_confirmation_keeps_its_text_and_probe_report() {
+        let mut reply = crate::runtime::RuntimeReply::error(
+            "NETWORK_REMOTE_EGRESS",
+            "Ни один прокси не ответил на проверку выхода. Перехват не подтверждён и будет снят.",
+        );
+        reply.network = Some(serde_json::json!({"remote_check":{
+            "dns":true,"egress":{"state":"failed","tested":1},"lan_clients":0}}));
+        let response = runtime_error_response(reply);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 8192).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "NETWORK_REMOTE_EGRESS");
+        assert!(v["error"].as_str().unwrap().contains("прокси"));
+        assert_eq!(v["network"]["remote_check"]["egress"]["state"], "failed");
+    }
+
+    #[tokio::test]
+    async fn other_runtime_errors_keep_their_bounded_shape() {
+        let response = runtime_error_response(crate::runtime::RuntimeReply::error("BUSY", "internal detail"));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 8192).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "BUSY");
+        assert!(v.get("network").is_none());
+        assert!(!body.windows(15).any(|w| w == b"internal detail"));
     }
 }

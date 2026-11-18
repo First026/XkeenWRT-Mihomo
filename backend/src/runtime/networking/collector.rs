@@ -19,19 +19,20 @@ pub struct Observed {
 /// Gather fresh OS state. Inputs are the requested client and the TCP peer
 /// management address, never resource allocations or prebuilt inventory.
 pub fn collect(
-    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, now_unix: u64, cgroup: &std::fs::File,
+    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, channel: Option<xkeenwrt_recovery::ManagementChannel>,
+    now_unix: u64, cgroup: &std::fs::File,
 ) -> Result<Observed, InventoryError> {
-    collect_inner(lan, selected, management, now_unix, None, None, cgroup)
+    collect_inner(lan, selected, management, channel, now_unix, None, None, cgroup)
 }
 
 /// Collect a fresh planner inventory. A currently accepted generation may be
 /// excluded only after its full nft and routing semantics match the journal.
 pub(crate) fn collect_for_generation(
-    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, now_unix: u64, current: Option<&xkeenwrt_recovery::Manifest>,
-    cgroup: &std::fs::File,
+    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, channel: Option<xkeenwrt_recovery::ManagementChannel>,
+    now_unix: u64, current: Option<&xkeenwrt_recovery::Manifest>, cgroup: &std::fs::File,
 ) -> Result<Observed, InventoryError> {
     if current.is_none() {
-        return collect_inner(lan, selected, management, now_unix, None, None, cgroup);
+        return collect_inner(lan, selected, management, channel, now_unix, None, None, cgroup);
     }
     let previous = current.ok_or(InventoryError::Unsupported)?;
     let before = super::helper::core_identity(cgroup).map_err(|_| InventoryError::Unsupported)?;
@@ -39,6 +40,7 @@ pub(crate) fn collect_for_generation(
         lan,
         selected,
         management,
+        channel,
         now_unix,
         Some(before.0),
         Some(previous),
@@ -53,20 +55,30 @@ pub(crate) fn collect_for_generation(
 
 /// Recollect after core startup, allowing only sockets owned by its verified PID.
 pub(crate) fn collect_after_core(
-    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, now_unix: u64, previous: Option<&xkeenwrt_recovery::Manifest>,
-    cgroup: &std::fs::File,
+    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, channel: Option<xkeenwrt_recovery::ManagementChannel>,
+    now_unix: u64, previous: Option<&xkeenwrt_recovery::Manifest>, cgroup: &std::fs::File,
 ) -> Result<Observed, InventoryError> {
     let before = super::helper::core_identity(cgroup).map_err(|_| InventoryError::Unsupported)?;
-    let observed = collect_inner(lan, selected, management, now_unix, Some(before.0), previous, cgroup)?;
+    let observed = collect_inner(
+        lan,
+        selected,
+        management,
+        channel,
+        now_unix,
+        Some(before.0),
+        previous,
+        cgroup,
+    )?;
     let after = super::helper::core_identity(cgroup).map_err(|_| InventoryError::Unsupported)?;
     if before != after {
         return Err(InventoryError::Unsupported);
     }
     Ok(observed)
 }
+#[allow(clippy::too_many_arguments)]
 fn collect_inner(
-    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, now_unix: u64, owned: Option<u32>,
-    current: Option<&xkeenwrt_recovery::Manifest>, cgroup: &std::fs::File,
+    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, channel: Option<xkeenwrt_recovery::ManagementChannel>,
+    now_unix: u64, owned: Option<u32>, current: Option<&xkeenwrt_recovery::Manifest>, cgroup: &std::fs::File,
 ) -> Result<Observed, InventoryError> {
     let q = |which| read::query(which, cgroup).map_err(|_| InventoryError::Unsupported);
     let links = q(Query::Links)?;
@@ -141,6 +153,7 @@ fn collect_inner(
         lan,
         selected,
         management,
+        channel,
         now_unix,
         &links,
         &addresses,
@@ -263,9 +276,9 @@ fn strip_owned_routes(input: &[u8], manifest: &xkeenwrt_recovery::Manifest) -> R
 
 #[allow(clippy::too_many_arguments)]
 fn assemble(
-    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, now: u64, links: &[u8], addresses: &[u8], neighbours: &[u8],
-    leases: &[u8], netifd: &[u8], dnsconfig: &[u8], proxyconfig: &[u8], proxyservice: &[u8], rules4: &[u8],
-    rules6: &[u8], routes4: &[u8], routes6: &[u8], nft: &[u8],
+    lan: &str, selected: Ipv4Addr, management: Ipv4Addr, channel: Option<xkeenwrt_recovery::ManagementChannel>,
+    now: u64, links: &[u8], addresses: &[u8], neighbours: &[u8], leases: &[u8], netifd: &[u8], dnsconfig: &[u8],
+    proxyconfig: &[u8], proxyservice: &[u8], rules4: &[u8], rules6: &[u8], routes4: &[u8], routes6: &[u8], nft: &[u8],
     flowtables: &[xkeenwrt_recovery::flow_offload::FlowTable], modules: &[u8], sockets: [&[u8]; 4],
 ) -> Result<Observed, InventoryError> {
     let fail = || InventoryError::Unsupported;
@@ -303,11 +316,14 @@ fn assemble(
             return Err(fail());
         };
         let scope = xkeenwrt_recovery::lan_network(scope).ok_or_else(fail)?;
-        if !xkeenwrt_recovery::valid_lan_scope(&scope, address.lan_address, management) {
+        if !xkeenwrt_recovery::valid_whole_lan_management(&scope, address.lan_address, management, channel) {
             return Err(fail());
         }
         (String::new(), Vec::new(), Vec::new(), Vec::new())
     } else {
+        if channel.is_some() {
+            return Err(fail());
+        }
         let (client, management) =
             inventory::resolve_client_and_management_mac(neighbours, leases, lan, selected, management, now)?;
         let selected_ipv6 = inventory::ipv6_for_mac(neighbours, lan, &client)?;

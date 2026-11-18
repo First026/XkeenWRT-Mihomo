@@ -88,3 +88,24 @@ test('Stop returns its complete fresh verified snapshot for display even if back
   const s=server([{network:{state:'stopped'}},final])
   assert.deepEqual(await stopLanService(s.fetch,async()=>{}),{success:true,...final})
 })
+
+test('A refused Tailscale confirmation removes capture at once and keeps the refusal code', async () => {
+  for (const code of ['NETWORK_REMOTE_DNS', 'NETWORK_REMOTE_EGRESS']) {
+    const calls = []
+    const replies = [
+      {body:{success:true,network:{state:'pending',transaction_id:'tx',confirm_token:'token'}}},
+      {body:{success:true,network:{state:'pending',transaction_id:'tx'}}},
+      {status:409,body:{success:false,code,error:'Проверка не прошла.',network:{remote_check:{dns:code!=='NETWORK_REMOTE_DNS',egress:{state:'failed',tested:3},lan_clients:0}}}},
+      {body:{success:true,network:{state:'cancelling',transaction_id:'tx'}}},
+      {body:{success:true,network:{state:'inactive'}}},
+    ]
+    const fetcher = async (url, init) => {
+      calls.push(url)
+      const next = replies.shift()
+      assert.ok(next, `unexpected request ${url}`)
+      return Response.json(next.body, {status: next.status ?? 200})
+    }
+    await assert.rejects(startLanService(fetcher, async()=>{}), new RegExp(code))
+    assert.deepEqual(calls, ['/api/control','/api/network/status','/api/network/confirm','/api/network/disable','/api/network/status'])
+  }
+})

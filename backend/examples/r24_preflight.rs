@@ -69,6 +69,7 @@ fn main() {
         flowtables: Some(tables),
         ipv6_offloaded: None,
         owned_listeners: false,
+        tailscale: None,
     };
     let lan = main_lan(&input.netifd).unwrap();
     let address = inventory::address_facts(&input.addresses, &lan).unwrap();

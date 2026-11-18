@@ -14,7 +14,12 @@ fn report_collects_independent_blockers_without_mutating_or_short_circuiting() {
         },
         lifecycle_clear: false,
     };
-    let report = evaluate(&input, &application, "192.0.2.101".parse().unwrap(), None);
+    let report = evaluate(
+        &input,
+        &application,
+        "192.0.2.101".parse::<std::net::Ipv4Addr>().unwrap(),
+        None,
+    );
     assert!(!report.ready);
     let codes: Vec<_> = report.issues.iter().map(|i| i.code).collect();
     for expected in [
@@ -56,7 +61,12 @@ fn corrupt_durable_journal_is_the_same_storage_prerequisite_for_check_and_start(
         lifecycle_clear: true,
         journal_readable: observed.is_ok(),
     };
-    let report = evaluate(&Inputs::default(), &app, "192.0.2.101".parse().unwrap(), None);
+    let report = evaluate(
+        &Inputs::default(),
+        &app,
+        "192.0.2.101".parse::<std::net::Ipv4Addr>().unwrap(),
+        None,
+    );
     assert!(report.issues.iter().any(|i| i.code == "NETWORK_STORAGE"));
     assert!(!report.ready);
     std::fs::remove_dir_all(root).unwrap();
@@ -96,7 +106,7 @@ fn report_and_start_use_the_same_exhausted_allocation_ranges() {
         lifecycle_clear: true,
         journal_readable: true,
     };
-    let report = evaluate(&raw, &app, "192.0.2.101".parse().unwrap(), None);
+    let report = evaluate(&raw, &app, "192.0.2.101".parse::<std::net::Ipv4Addr>().unwrap(), None);
     assert!(report.issues.iter().any(|i| i.code == "NETWORK_TABLE_CONFLICT"));
     raw.rules4 = serde_json::to_vec(
         &(10000..=32000)
@@ -106,7 +116,7 @@ fn report_and_start_use_the_same_exhausted_allocation_ranges() {
     .unwrap();
     // The bounded kernel inventory limit is also a prerequisite; never promise
     // free resources after truncating a 21,001-rule table to a successful sample.
-    let report = evaluate(&raw, &app, "192.0.2.101".parse().unwrap(), None);
+    let report = evaluate(&raw, &app, "192.0.2.101".parse::<std::net::Ipv4Addr>().unwrap(), None);
     assert!(
         report
             .issues
@@ -126,7 +136,7 @@ fn resource_shortages_name_their_resource_with_numbers_and_cleanup_only_warns() 
         resources,
         lifecycle_clear: true,
     };
-    let peer = "192.0.2.101".parse().unwrap();
+    let peer = "192.0.2.101".parse::<std::net::Ipv4Addr>().unwrap();
     let short = application(Forecast {
         shortages: vec![Shortage::Memory {
             available_mib: 243,
@@ -165,4 +175,62 @@ fn resource_shortages_name_their_resource_with_numbers_and_cleanup_only_warns() 
             .iter()
             .any(|i| i.check == "resources" && i.severity == Severity::Blocker)
     );
+}
+
+#[test]
+fn tailscale_start_needs_the_current_overlay_boundary_and_a_peer_outside_the_lan() {
+    use xkeen_ui::management::ManagementPeer;
+    use xkeen_ui::runtime::networking::compatibility::management_allowed;
+    let scope = Some("192.168.5.0/24");
+    let router = "192.168.5.1".parse().unwrap();
+    let boundary = Some("100.64.10.1".parse().unwrap());
+    let overlay = ManagementPeer::Tailscale {
+        peer: "100.64.20.2".parse().unwrap(),
+        router: "100.64.10.1".parse().unwrap(),
+    };
+    assert!(management_allowed(scope, router, overlay, boundary));
+    // The listener's address no longer matches tailscale0: refuse.
+    assert!(!management_allowed(
+        scope,
+        router,
+        overlay,
+        Some("100.64.10.2".parse().unwrap())
+    ));
+    assert!(!management_allowed(scope, router, overlay, None));
+    assert!(!management_allowed(None, router, overlay, boundary));
+    // LAN peers keep the r26 rule and need no overlay.
+    let lan = ManagementPeer::Lan {
+        peer: "192.168.5.236".parse().unwrap(),
+    };
+    assert!(management_allowed(scope, router, lan, None));
+    let lan_cgnat = ManagementPeer::Lan {
+        peer: "100.64.20.2".parse().unwrap(),
+    };
+    assert!(!management_allowed(scope, router, lan_cgnat, boundary));
+}
+
+#[test]
+fn over_tailscale_only_the_gateway_restarts_and_http_socks_stays_lan_only() {
+    use xkeen_ui::management::ManagementPeer;
+    use xkeen_ui::runtime::networking::compatibility::{explicit_allowed, restart_allowed};
+    let scope = Some("192.168.5.0/24");
+    let router = "192.168.5.1".parse().unwrap();
+    let boundary = Some("100.64.10.1".parse().unwrap());
+    let overlay = ManagementPeer::Tailscale {
+        peer: "100.64.20.2".parse().unwrap(),
+        router: "100.64.10.1".parse().unwrap(),
+    };
+    let lan = ManagementPeer::Lan {
+        peer: "192.168.5.236".parse().unwrap(),
+    };
+    // Gateway only: allowed over Tailscale with a current boundary.
+    assert!(restart_allowed(scope, router, overlay, boundary, false));
+    assert!(!restart_allowed(scope, router, overlay, None, false), "stale boundary");
+    // HTTP/SOCKS selected: refused over Tailscale before anything stops.
+    assert!(!restart_allowed(scope, router, overlay, boundary, true));
+    // The LAN keeps r26 behaviour for both selections.
+    assert!(restart_allowed(scope, router, lan, None, true));
+    assert!(restart_allowed(scope, router, lan, None, false));
+    assert!(explicit_allowed(lan));
+    assert!(!explicit_allowed(overlay));
 }

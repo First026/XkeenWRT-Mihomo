@@ -12,6 +12,7 @@ pub mod key;
 pub(crate) mod planning;
 pub(crate) mod plans;
 pub mod read;
+pub mod remote_check;
 pub mod status;
 pub mod transaction;
 

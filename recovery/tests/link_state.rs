@@ -234,3 +234,33 @@ fn bridge_membership_identity_admin_state_and_addresses_still_drift() {
         "a LAN bridge without carrier must remain topology drift"
     );
 }
+
+#[test]
+fn tailscale_managed_whole_lan_evidence_carries_the_channel_and_stays_valid() {
+    let lan = whole_lan_manifest();
+    let mut v = serde_json::to_value(&lan).unwrap();
+    v["management_channel"] = json!("tailscale");
+    v["source_ipv4"] = json!("100.64.20.2");
+    v["management_ipv4"] = json!("100.64.20.2");
+    let overlay: Manifest = serde_json::from_value(v).unwrap();
+    let links = router(true);
+    let evidence = capture(&overlay, &links, &addresses_for(&links))
+        .expect("evidence for a Tailscale-managed whole LAN");
+    assert!(evidence.valid());
+    assert_eq!(
+        evidence.scope.management_channel,
+        Some(xkeenwrt_recovery::ManagementChannel::Tailscale)
+    );
+    assert_eq!(
+        evidence.scope.management_ipv4,
+        "100.64.20.2".parse::<std::net::Ipv4Addr>().unwrap()
+    );
+    // The LAN evidence of the same router keeps no channel (r26 bytes).
+    let plain = capture(&lan, &links, &addresses_for(&links)).unwrap();
+    assert!(plain.valid() && plain.scope.management_channel.is_none());
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("management_channel")
+    );
+}

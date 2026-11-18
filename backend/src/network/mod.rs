@@ -88,6 +88,8 @@ pub struct TrafficPolicy {
     pub local_ipv4: Vec<String>,
     pub selected_ipv6: Vec<String>,
     pub management_ipv6: Option<Vec<Ipv6Addr>>,
+    /// Tailscale start of a whole LAN (decision 024); `None` for a LAN peer.
+    pub management_channel: Option<xkeenwrt_recovery::ManagementChannel>,
     pub local_ipv6: Vec<String>,
     pub candidate_id: String,
     pub previous_table: Option<(u64, String)>,
@@ -113,6 +115,7 @@ impl Default for TrafficPolicy {
             local_ipv4: vec![],
             selected_ipv6: vec![],
             management_ipv6: None,
+            management_channel: None,
             local_ipv6: vec![],
             candidate_id: String::new(),
             previous_table: None,
@@ -140,6 +143,8 @@ pub struct OwnedManifest {
     pub source_ipv4: Ipv4Addr,
     pub management_ipv4: Ipv4Addr,
     pub management_ipv6: Vec<Ipv6Addr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_channel: Option<xkeenwrt_recovery::ManagementChannel>,
     pub local_ipv4: Vec<String>,
     pub selected_ipv6: Vec<String>,
     pub local_ipv6: Vec<String>,
@@ -277,15 +282,18 @@ impl Network {
             || p.lan_address.is_unspecified()
             || p.lan_address.is_loopback()
             || p.lan_address.is_multicast()
-            || !i
-                .lan_cidrs
-                .iter()
-                .any(|cidr| usable_lan_pair(cidr, p.lan_address, p.client_ipv4))
+            || (p.management_channel.is_some()
+                && (p.lan_scope.is_none() || !matches!(p.failure_policy, Some(FailurePolicy::DirectOnFailure))))
+            || (p.management_channel.is_none()
+                && !i
+                    .lan_cidrs
+                    .iter()
+                    .any(|cidr| usable_lan_pair(cidr, p.lan_address, p.client_ipv4)))
             || p.client_ipv4 == p.lan_address
             || p.client_ipv4.is_unspecified()
             || p.client_ipv4.is_loopback()
             || p.client_ipv4.is_multicast()
-            || !p.local_ipv4.iter().any(|cidr| cidr4_contains(cidr, p.client_ipv4))
+            || (p.management_channel.is_none() && !p.local_ipv4.iter().any(|cidr| cidr4_contains(cidr, p.client_ipv4)))
             || p.management_ipv4.is_unspecified()
             || p.lan_ifname.is_empty()
             || p.lan_ifname.len() > 15
@@ -319,7 +327,12 @@ impl Network {
         if let Some(scope) = &p.lan_scope {
             if i.lan_cidrs.len() != 1
                 || xkeenwrt_recovery::lan_network(&i.lan_cidrs[0]).as_ref() != Some(scope)
-                || !xkeenwrt_recovery::valid_lan_scope(scope, p.lan_address, p.management_ipv4)
+                || !xkeenwrt_recovery::valid_whole_lan_management(
+                    scope,
+                    p.lan_address,
+                    p.management_ipv4,
+                    p.management_channel,
+                )
                 || p.client_ipv4 != p.management_ipv4
                 || i.client_mac.as_deref() != Some("")
                 || !p.selected_mac.is_empty()
@@ -368,6 +381,7 @@ impl Network {
             source_ipv4: p.client_ipv4,
             management_ipv4: p.management_ipv4,
             management_ipv6: management_ipv6.clone(),
+            management_channel: p.management_channel,
             local_ipv4: p.local_ipv4.clone(),
             selected_ipv6: p.selected_ipv6.clone(),
             local_ipv6: p.local_ipv6.clone(),
@@ -393,6 +407,7 @@ impl Network {
                 source_ipv4: p.client_ipv4,
                 management_ipv4: p.management_ipv4,
                 management_ipv6: management_ipv6.clone(),
+                management_channel: p.management_channel,
                 local_ipv4: p.local_ipv4.clone(),
                 selected_ipv6: p.selected_ipv6.clone(),
                 local_ipv6: p.local_ipv6.clone(),

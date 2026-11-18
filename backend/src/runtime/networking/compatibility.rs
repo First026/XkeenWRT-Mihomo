@@ -32,6 +32,8 @@ pub struct Inputs {
     pub flowtables: Option<Vec<FlowTable>>,
     pub ipv6_offloaded: Option<usize>,
     pub owned_listeners: bool,
+    /// Router address of the current tailscale0 management boundary, if any.
+    pub tailscale: Option<Ipv4Addr>,
 }
 pub use crate::runtime::resources::{Forecast, Shortage};
 #[derive(Clone, Debug, Serialize)]
@@ -154,9 +156,53 @@ pub fn main_lan(input: &[u8]) -> Option<String> {
     };
     Some(lan["l3_device"].as_str()?.to_owned())
 }
+/// Start admission for the management peer: a LAN host under the r26 rule,
+/// or a Tailscale peer that reached the listener of the current tailscale0
+/// boundary and lies outside the LAN (decision 024).
+pub fn management_allowed(
+    scope: Option<&str>, lan_address: Ipv4Addr, peer: crate::management::ManagementPeer, tailscale: Option<Ipv4Addr>,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    match peer {
+        crate::management::ManagementPeer::Lan { peer } => xkeenwrt_recovery::valid_lan_scope(scope, lan_address, peer),
+        crate::management::ManagementPeer::Tailscale { peer, router } => {
+            tailscale == Some(router) && xkeenwrt_recovery::valid_overlay_scope(scope, lan_address, peer)
+        }
+    }
+}
+/// Restart of the selected inputs: a LAN peer may restart any selection; over
+/// Tailscale only the gateway, because HTTP/SOCKS is a main-LAN binding.
+pub fn restart_allowed(
+    scope: Option<&str>, lan_address: Ipv4Addr, peer: crate::management::ManagementPeer, tailscale: Option<Ipv4Addr>,
+    explicit_selected: bool,
+) -> bool {
+    match peer {
+        crate::management::ManagementPeer::Lan { .. } => management_allowed(scope, lan_address, peer, None),
+        crate::management::ManagementPeer::Tailscale { .. } => {
+            !explicit_selected && management_allowed(scope, lan_address, peer, tailscale)
+        }
+    }
+}
+/// Enabling HTTP/SOCKS binds a LAN address its administrator chose; it is a
+/// main-LAN action. Turning it off is allowed from any channel.
+pub fn explicit_allowed(peer: crate::management::ManagementPeer) -> bool {
+    peer.channel().is_none()
+}
+/// Router address of the tailscale0 management boundary as it is right now.
+pub(crate) fn current_tailscale() -> Option<Ipv4Addr> {
+    crate::management::discover_tailscale().and_then(|b| match b.address.ip() {
+        std::net::IpAddr::V4(router) => Some(router),
+        std::net::IpAddr::V6(_) => None,
+    })
+}
 /// This exact pure evaluator is also the offline snapshot seam. Application
 /// facts and management peer must be supplied explicitly in an offline replay.
-pub fn evaluate(i: &Inputs, app: &Application, peer: Ipv4Addr, current: Option<&Manifest>) -> Report {
+pub fn evaluate(
+    i: &Inputs, app: &Application, peer: impl Into<crate::management::ManagementPeer>, current: Option<&Manifest>,
+) -> Report {
+    let peer = peer.into();
     let mut report = Report::default();
     for (name, valid, code, message) in [
         (
@@ -237,9 +283,16 @@ pub fn evaluate(i: &Inputs, app: &Application, peer: Ipv4Addr, current: Option<&
         };
         report.check(
             "management",
-            scope.is_some_and(|s| xkeenwrt_recovery::valid_lan_scope(&s, address.lan_address, peer)),
+            management_allowed(scope.as_deref(), address.lan_address, peer, i.tailscale),
             "NETWORK_MANAGEMENT",
-            "Запуск разрешён только из основной IPv4 LAN с сохранённым путём управления.",
+            match peer {
+                crate::management::ManagementPeer::Lan { .. } => {
+                    "Запуск разрешён только из основной IPv4 LAN с сохранённым путём управления."
+                }
+                crate::management::ManagementPeer::Tailscale { .. } => {
+                    "Tailscale-вход изменился или недоступен: обновите страницу панели."
+                }
+            },
         );
     }
     let modules = std::str::from_utf8(&i.modules)
@@ -587,6 +640,7 @@ pub(crate) fn collect(cgroup: &std::fs::File) -> Inputs {
         },
         flowtables,
         owned_listeners: false,
+        tailscale: current_tailscale(),
     };
     if let Some(lan) = main_lan(&result.netifd)
         && let (Ok(address), Ok(before)) = (

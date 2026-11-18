@@ -479,6 +479,7 @@ fn recovery_fixture() -> xkeenwrt_recovery::Journal {
             source_ipv4: "192.0.2.2".parse().unwrap(),
             management_ipv4: "192.0.2.3".parse().unwrap(),
             management_ipv6: vec!["2001:db8::3".parse().unwrap()],
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into()],
             selected_ipv6: vec!["2001:db8::2/128".into()],
             local_ipv6: vec!["2001:db8::/64".into()],
@@ -1615,4 +1616,112 @@ fn selected_inputs_commit_ack_survives_disable_and_does_not_replay_over_new_user
     assert_eq!(settled_selection(&Selection::default(), &j), Some(accepted));
     j.profile_acceptance = None;
     assert!(settled_selection(&Selection::default(), &j).is_none());
+}
+
+#[test]
+fn failed_remote_probe_blocks_confirm_and_leaves_the_transaction_pending() {
+    use xkeen_ui::runtime::networking::transaction::{Coordinator, Driver, Error, Pending, Request};
+    struct Fake {
+        pending: Option<Pending>,
+        applied: bool,
+        confirmed: bool,
+        remote: Option<Error>,
+        remote_calls: usize,
+    }
+    impl Driver for Fake {
+        type Guard = ();
+        fn idle_ready(&mut self, _: &Request, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+        fn lock(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn now_ms(&mut self) -> Result<u64, Error> {
+            Ok(1_001)
+        }
+        fn boot_id(&mut self) -> Result<String, Error> {
+            Ok("00000000-0000-4000-8000-000000000006".into())
+        }
+        fn make_token(&mut self, tx: &str, request: &Request) -> Result<String, Error> {
+            Ok(xkeen_ui::runtime::networking::transaction::confirmation_token(
+                &[7; 32],
+                tx,
+                request.generation,
+                &request.plan_id,
+                &request.idempotency_key,
+            ))
+        }
+        fn load_pending(&mut self) -> Result<Option<Pending>, Error> {
+            Ok(self.pending.clone())
+        }
+        fn prepare_pending(&mut self, p: &Pending) -> Result<(), Error> {
+            self.pending = Some(p.clone());
+            Ok(())
+        }
+        fn await_ready(&mut self, _: &Pending) -> Result<(), Error> {
+            Ok(())
+        }
+        fn ready(&mut self, _: &Pending) -> Result<bool, Error> {
+            Ok(true)
+        }
+        fn revalidate(&mut self, _: &Pending) -> Result<(), Error> {
+            Ok(())
+        }
+        fn not_revoked(&mut self, _: &Pending) -> Result<bool, Error> {
+            Ok(true)
+        }
+        fn apply(&mut self, _: &Pending) -> Result<(), Error> {
+            Ok(())
+        }
+        fn mark_applied(&mut self, _: &Pending) -> Result<(), Error> {
+            self.applied = true;
+            Ok(())
+        }
+        fn is_applied(&mut self, _: &Pending) -> Result<bool, Error> {
+            Ok(self.applied)
+        }
+        fn verify_active(&mut self, _: &Pending) -> Result<bool, Error> {
+            Ok(true)
+        }
+        fn health(&mut self, _: &Pending) -> Result<bool, Error> {
+            Ok(true)
+        }
+        fn remote_check(&mut self, _: &Pending) -> Result<(), Error> {
+            self.remote_calls += 1;
+            match self.remote.take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+        fn confirm(&mut self, _: &Pending) -> Result<(), Error> {
+            self.confirmed = true;
+            Ok(())
+        }
+    }
+    let request = Request {
+        plan_id: "00000000-0000-4000-8000-000000000003".into(),
+        candidate_id: "candidate-1".into(),
+        idempotency_key: "synthetic-idempotency".into(),
+        generation: 2,
+    };
+    for (failure, expected) in [
+        (Some(Error::RemoteDns), Err(Error::RemoteDns)),
+        (Some(Error::RemoteEgress), Err(Error::RemoteEgress)),
+        (None, Ok(())),
+    ] {
+        let succeeds = failure.is_none();
+        let mut c = Coordinator::new(Fake {
+            pending: None,
+            applied: false,
+            confirmed: false,
+            remote: failure,
+            remote_calls: 0,
+        });
+        let pending = c.apply(request.clone()).unwrap();
+        assert_eq!(c.confirm(&pending.transaction_id, &pending.confirm_token), expected);
+        assert_eq!(c.driver().remote_calls, 1, "probes run once, under the confirm checks");
+        assert_eq!(c.driver().confirmed, succeeds);
+        // A refused remote confirm keeps the journal Pending: rescue revokes it.
+        assert_eq!(c.driver().pending.as_ref(), Some(&pending));
+    }
 }

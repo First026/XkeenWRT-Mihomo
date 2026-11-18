@@ -37,6 +37,7 @@ fn journal() -> Journal {
             source_ipv4: "192.0.2.2".parse().unwrap(),
             management_ipv4: "192.0.2.3".parse().unwrap(),
             management_ipv6: vec!["2001:db8::3".parse().unwrap()],
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into()],
             selected_ipv6: vec!["2001:db8::2/128".into()],
             local_ipv6: vec!["2001:db8::/64".into()],

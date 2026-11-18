@@ -46,22 +46,22 @@ pub enum RuntimeCommand {
     },
     Start,
     ServiceStart {
-        peer_ipv4: std::net::Ipv4Addr,
+        peer: crate::management::ManagementPeer,
     },
     ServiceStop,
     ServiceRestart {
-        peer_ipv4: std::net::Ipv4Addr,
+        peer: crate::management::ManagementPeer,
     },
     ServiceApply {
         profile_id: String,
         revision: String,
         candidate_id: String,
         idempotency_key: String,
-        peer_ipv4: std::net::Ipv4Addr,
+        peer: crate::management::ManagementPeer,
     },
     ExplicitSet {
         binding: Option<ExplicitBinding>,
-        peer_ipv4: std::net::Ipv4Addr,
+        peer: crate::management::ManagementPeer,
     },
     InputsStatus,
     Stop,
@@ -85,7 +85,7 @@ pub enum RuntimeCommand {
     },
     NetworkStatus,
     Compatibility {
-        peer_ipv4: std::net::Ipv4Addr,
+        peer: crate::management::ManagementPeer,
     },
     NetworkDisable {
         idempotency_key: String,
@@ -111,6 +111,21 @@ pub struct NetworkPlanRequest {
     pub ipv6_policy: String,
     pub failure_policy: String,
     pub peer_ipv4: std::net::Ipv4Addr,
+    /// Router address of the Tailscale listener that accepted `peer_ipv4`;
+    /// absent for a LAN peer (decision 024).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_router: Option<std::net::Ipv4Addr>,
+}
+impl NetworkPlanRequest {
+    pub fn management_peer(&self) -> crate::management::ManagementPeer {
+        match self.tailscale_router {
+            Some(router) => crate::management::ManagementPeer::Tailscale {
+                peer: self.peer_ipv4,
+                router,
+            },
+            None => crate::management::ManagementPeer::Lan { peer: self.peer_ipv4 },
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +259,9 @@ pub struct Coordinator {
     network_control: bool,
     storage_ready: bool,
     storage_attempt: Option<std::time::Instant>,
+    /// Last Tailscale confirmation probes with their transaction (decision 024).
+    /// Memory only: status shows them, flash never stores them.
+    remote_check: Option<(String, networking::remote_check::RemoteCheck)>,
 }
 impl Coordinator {
     fn status_reply(&self, running: Option<bool>) -> RuntimeReply {
@@ -306,7 +324,7 @@ impl Coordinator {
     /// gateway, so it satisfies the profile prerequisite and is what the
     /// operation will snapshot; the plan validates the same candidate right after.
     fn compatibility_report(
-        &self, peer: std::net::Ipv4Addr, candidate: Option<(u64, usize)>,
+        &self, peer: crate::management::ManagementPeer, candidate: Option<(u64, usize)>,
     ) -> networking::compatibility::Report {
         use std::os::fd::AsRawFd;
         let accepted = self
@@ -336,7 +354,7 @@ impl Coordinator {
             .and_then(networking::driver::OpenWrtDriver::<validator::ProcessValidator>::capability_manifest);
         networking::compatibility::evaluate(&raw, &application, peer, current)
     }
-    fn compatibility_reply(&self, peer: std::net::Ipv4Addr) -> RuntimeReply {
+    fn compatibility_reply(&self, peer: crate::management::ManagementPeer) -> RuntimeReply {
         let _guard = match ipc::RuntimeLock::acquire(std::path::Path::new("/var/run/xkeenwrt/mutation.lock")) {
             Ok(guard) => guard,
             Err(_) => return RuntimeReply::error("BUSY", "Network state is being updated"),
@@ -356,6 +374,14 @@ impl Coordinator {
             Error::Expired => RuntimeReply::error("EXPIRED", "Network confirmation window expired"),
             Error::Storage => RuntimeReply::error("STORAGE_ERROR", "Network transaction storage is unavailable"),
             Error::Unhealthy => RuntimeReply::error("UNHEALTHY", "The managed core failed its local health check"),
+            Error::RemoteDns => RuntimeReply::error(
+                "NETWORK_REMOTE_DNS",
+                "Шлюзовый DNS не ответил на проверку. Перехват не подтверждён и будет снят.",
+            ),
+            Error::RemoteEgress => RuntimeReply::error(
+                "NETWORK_REMOTE_EGRESS",
+                "Ни один прокси не ответил на проверку выхода. Перехват не подтверждён и будет снят.",
+            ),
         }
     }
     fn network_ready(&self) -> bool {
@@ -411,6 +437,12 @@ impl Coordinator {
                 xkeenwrt_recovery::FailurePolicy::BlockSelectedOnFailure => "block_selected_on_failure",
             }),
             "remaining_seconds": remaining,
+            "management_channel": journal.as_ref().and_then(|j| j.current.management_channel),
+            "remote_check": journal.as_ref().and_then(|j| self
+                .remote_check
+                .as_ref()
+                .filter(|(tx, _)| *tx == j.tx_id)
+                .map(|(_, report)| report)),
             "active_event": receipt,
             "recovery_notice": journal.as_ref().and_then(|j| networking::active::recovery_notice(
                 std::path::Path::new("/var/run/xkeenwrt/recovery-notice.json"),
@@ -471,7 +503,7 @@ impl Coordinator {
             .candidate_bundle(&request.profile_id, &request.expected_revision, &request.candidate_id)
             .ok()
             .map(|b| b.footprint());
-        let report = self.compatibility_report(request.peer_ipv4, candidate);
+        let report = self.compatibility_report(request.management_peer(), candidate);
         if !report.ready {
             let code = report
                 .issues
@@ -547,6 +579,7 @@ impl Coordinator {
             &request.lan_interface,
             request.selected_ipv4,
             request.management_ipv4,
+            request.management_peer().channel(),
             timestamp,
             previous.as_ref(),
             &self.incarnation_cgroup,
@@ -573,6 +606,7 @@ impl Coordinator {
             Ok(identity) => identity,
             Err(_) => return RuntimeReply::error("CONFLICT", "Network owner or generation state is invalid"),
         };
+        let management_channel = request.management_peer().channel();
         let plan = match networking::planning::prepare(
             &mut self.activation,
             observed,
@@ -582,6 +616,7 @@ impl Coordinator {
                 manual_candidate_id: request.candidate_id,
                 selected_ipv4: request.selected_ipv4,
                 management_ipv4: request.management_ipv4,
+                management_channel,
                 selected_ipv6: request.selected_ipv6,
                 management_ipv6,
                 failure_policy,
@@ -836,12 +871,23 @@ impl Coordinator {
             return Self::network_error(error);
         }
         let mut coordinator = networking::transaction::Coordinator::new(driver);
-        match coordinator.confirm(transaction_id, confirm_token) {
+        let result = coordinator.confirm(transaction_id, confirm_token);
+        let report = coordinator.driver().remote_report().cloned();
+        drop(coordinator);
+        if let Some(report) = &report {
+            self.remote_check = Some((transaction_id.to_owned(), report.clone()));
+        }
+        let mut reply = match result {
             Ok(()) => {
                 Self::network_reply(serde_json::json!({ "state": "confirmed", "transaction_id": transaction_id }))
             }
             Err(error) => Self::network_error(error),
+        };
+        if let Some(report) = report {
+            let network = reply.network.get_or_insert_with(|| serde_json::json!({}));
+            network["remote_check"] = serde_json::json!(report);
         }
+        reply
     }
     fn network_disable(&mut self, idempotency_key: &str) -> RuntimeReply {
         use std::path::Path;
@@ -1276,6 +1322,7 @@ impl Coordinator {
             network_control,
             storage_ready: false,
             storage_attempt: None,
+            remote_check: None,
         };
         coordinator.refresh_bootstrap();
         Ok(coordinator)
@@ -1450,22 +1497,22 @@ impl Coordinator {
             }
         }
         match &command {
-            RuntimeCommand::ServiceStart { peer_ipv4 } => return self.service_start(*peer_ipv4),
+            RuntimeCommand::ServiceStart { peer } => return self.service_start(*peer),
             RuntimeCommand::ServiceStop => return self.service_stop(),
-            RuntimeCommand::ServiceRestart { peer_ipv4 } => return self.service_restart(*peer_ipv4),
+            RuntimeCommand::ServiceRestart { peer } => return self.service_restart(*peer),
             RuntimeCommand::ServiceApply {
                 profile_id,
                 revision,
                 candidate_id,
                 idempotency_key,
-                peer_ipv4,
-            } => return self.service_apply(profile_id, revision, candidate_id, idempotency_key, *peer_ipv4),
-            RuntimeCommand::ExplicitSet { binding, peer_ipv4 } => {
-                return self.explicit_set(binding.clone(), *peer_ipv4);
+                peer,
+            } => return self.service_apply(profile_id, revision, candidate_id, idempotency_key, *peer),
+            RuntimeCommand::ExplicitSet { binding, peer } => {
+                return self.explicit_set(binding.clone(), *peer);
             }
             RuntimeCommand::InputsStatus => return self.inputs_status(),
             RuntimeCommand::NetworkStatus => return self.network_status(),
-            RuntimeCommand::Compatibility { peer_ipv4 } => return self.compatibility_reply(*peer_ipv4),
+            RuntimeCommand::Compatibility { peer } => return self.compatibility_reply(*peer),
             RuntimeCommand::NetworkDisable { idempotency_key } => {
                 {
                     let _guard = match Self::emergency_guard() {

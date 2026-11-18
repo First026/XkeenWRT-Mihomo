@@ -78,6 +78,7 @@ function Workspace() {
   const [resumeRequestId, setResumeRequestId] = useState<string | null>(null)
   const [networkState, setNetworkState] = useState('unknown')
   const [recoveryNotice, setRecoveryNotice] = useState<ControlStatus['recoveryNotice']>(undefined)
+  const [remoteCheck, setRemoteCheck] = useState<ControlStatus['remoteCheck']>(undefined)
   const [statusStale, setStatusStale] = useState(false)
   const [managedInputs, setManagedInputs] = useState<ManagedInputStatus | null>(null)
   const statusEpoch = useRef(0)
@@ -139,6 +140,7 @@ function Workspace() {
     setAppliedProfile(status.activeProfileId ?? null)
     setNetworkState(status.networkState ?? 'unknown')
     setRecoveryNotice(status.recoveryNotice)
+    setRemoteCheck(status.remoteCheck)
   }, [dispatch])
   const refreshStatus = useCallback((): Promise<ControlStatus | null> => {
     const epoch = statusEpoch.current
@@ -188,7 +190,12 @@ function Workspace() {
     dispatch({
       type: 'SET_SERVICE_STATUS',
       status: 'pending',
-      pendingText: action === 'stop' ? 'Остановка…' : action === 'restart' ? 'Перезапуск…' : 'Запуск…',
+      pendingText:
+        action === 'stop'
+          ? 'Остановка…'
+          : appInfo?.management_scope === 'tailscale_admin'
+            ? action === 'restart' ? 'Перезапуск и проверка через Tailscale…' : 'Запуск и проверка через Tailscale…'
+            : action === 'restart' ? 'Перезапуск…' : 'Запуск…',
     })
     try {
       const status = action === 'restart' ? await restartManagedService() : action === 'stop' ? await stopLanService() : await startLanService()
@@ -204,6 +211,9 @@ function Workspace() {
         NOT_READY: 'Перехват LAN не готов. Проверьте состояние сети и наличие модулей TPROXY.',
         UNSUPPORTED: 'Текущая схема LAN, DNS или других перехватчиков несовместима с запуском. Сеть не была переключена.',
         CONFLICT: 'Примените сохранённый профиль; если сервис уже работает с ошибкой — остановите его и запустите снова.',
+        NETWORK_REMOTE_DNS: 'Проверка через Tailscale: шлюзовый DNS не ответил. Перехват снят, LAN работает напрямую.',
+        NETWORK_REMOTE_EGRESS: 'Проверка через Tailscale: ни один прокси не вышел в интернет. Перехват снят, LAN работает напрямую.',
+        NETWORK_MANAGEMENT: 'Tailscale-вход изменился или недоступен: обновите страницу панели.',
       }
       showToast(messages[code] || (error instanceof ServiceError ? error.serverText : undefined) || code, 'error')
     } finally {
@@ -280,8 +290,6 @@ function Workspace() {
     async (config: Config, content: string) => {
       const id = profileIdFromFile(config.file)
       if (!id) throw new Error('Не удалось определить профиль.')
-      if(appInfo?.management_scope==='tailscale_admin' && ['active','pending','degraded','recovering'].includes(networkState))
-        throw new Error('Применение работающего шлюза доступно из основной IPv4 LAN. Через Tailscale доступны состояние и остановка.')
       beginStatusAction()
       dispatch({ type: 'SET_SERVICE_STATUS', status: 'pending', pendingText: 'Проверка и применение...' })
       try {
@@ -316,7 +324,7 @@ function Workspace() {
         await refreshStatus()
       }
     },
-    [appInfo?.management_scope,networkState,capabilities, dispatch, refreshStatus, refreshVersion, saveDraft, beginStatusAction, endStatusAction]
+    [capabilities, dispatch, refreshStatus, refreshVersion, saveDraft, beginStatusAction, endStatusAction]
   )
 
   const activeConfig = useMemo(() => store.configs.find((config) => config.file === activeFile) ?? store.configs[0], [store.configs, activeFile])
@@ -463,6 +471,7 @@ function Workspace() {
           startDisabledReason={!store.coreVersions.mihomo ? 'Сначала установите Mihomo' : resumeRequestId ? 'Сначала возобновите управление после переустановки' : !appliedProfile ? 'Сначала примените профиль в редакторе' : undefined}
           networkState={networkState}
           recoveryNotice={recoveryNotice}
+          remoteCheck={remoteCheck}
           stale={statusStale}
           appliedProfile={appliedProfile}
           onOpenCoreManage={() => openModal('showCoreManageModal')}
@@ -558,7 +567,7 @@ function Workspace() {
               <div className="space-y-4 py-2">
                 <section className="border-border space-y-1 rounded-lg border p-3">
                   <h3 className="font-medium">Текущее состояние шлюза</h3>
-                  <LanGatewayStatus networkState={networkState} recoveryNotice={recoveryNotice} stale={statusStale} />
+                  <LanGatewayStatus networkState={networkState} recoveryNotice={recoveryNotice} remoteCheck={remoteCheck} stale={statusStale} />
                 </section>
                 <CompatibilityCheck disabled={servicePending} />
               </div>

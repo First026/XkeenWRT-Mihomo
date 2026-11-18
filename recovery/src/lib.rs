@@ -34,6 +34,10 @@ pub struct Manifest {
     pub source_ipv4: std::net::Ipv4Addr,
     pub management_ipv4: std::net::Ipv4Addr,
     pub management_ipv6: Vec<std::net::Ipv6Addr>,
+    /// Present only for a whole-LAN generation started over the Tailscale
+    /// overlay; LAN starts omit it so their bytes stay readable by r26 rescue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_channel: Option<ManagementChannel>,
     pub local_ipv4: Vec<String>,
     pub selected_ipv6: Vec<String>,
     pub local_ipv6: Vec<String>,
@@ -47,6 +51,13 @@ pub struct Manifest {
 pub enum FailurePolicy {
     DirectOnFailure,
     BlockSelectedOnFailure,
+}
+/// How the owner reached the panel when a whole-LAN generation was started
+/// (decision 024). A LAN start has no channel.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagementChannel {
+    Tailscale,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -393,9 +404,16 @@ impl Manifest {
             && self.mark != 0
             && self.mark == self.mask
             && self.mark.count_ones() == 1
+            && self.management_channel.is_none_or(|_| {
+                self.whole_lan() && self.failure_policy == FailurePolicy::DirectOnFailure
+            })
             && self.lan_scope.as_ref().is_none_or(|scope| {
-                valid_lan_scope(scope, self.lan_address, self.management_ipv4)
-                    && self.source_ipv4 == self.management_ipv4
+                valid_whole_lan_management(
+                    scope,
+                    self.lan_address,
+                    self.management_ipv4,
+                    self.management_channel,
+                ) && self.source_ipv4 == self.management_ipv4
                     && self.selected_mac.is_empty()
                     && self.management_macs.is_empty()
                     && self.selected_ipv6.is_empty()
@@ -417,26 +435,55 @@ pub fn lan_network(cidr: &str) -> Option<String> {
     let network = std::net::Ipv4Addr::from(u32::from(address) & (u32::MAX << (32 - prefix)));
     Some(format!("{network}/{prefix}"))
 }
-pub fn valid_lan_scope(scope: &str, router: std::net::Ipv4Addr, peer: std::net::Ipv4Addr) -> bool {
-    let Some((network, prefix)) = scope.split_once('/') else {
-        return false;
-    };
-    let (Ok(network), Ok(prefix)) = (network.parse::<std::net::Ipv4Addr>(), prefix.parse::<u32>())
-    else {
-        return false;
-    };
-    if !(1..=30).contains(&prefix) || router == peer {
-        return false;
+/// Network and mask of a canonical bounded LAN scope (/1–/30, not multicast or loopback).
+fn lan_scope_parts(scope: &str) -> Option<(u32, u32)> {
+    let (network, prefix) = scope.split_once('/')?;
+    let network = network.parse::<std::net::Ipv4Addr>().ok()?;
+    let prefix = prefix.parse::<u32>().ok()?;
+    if !(1..=30).contains(&prefix) || network.is_multicast() || network.is_loopback() {
+        return None;
     }
     let mask = u32::MAX << (32 - prefix);
     let net = u32::from(network);
-    net & mask == net
-        && !network.is_multicast()
-        && !network.is_loopback()
-        && [router, peer].iter().all(|ip| {
-            let address = u32::from(*ip);
-            address & mask == net && address != net && address != (net | !mask)
+    (net & mask == net).then_some((net, mask))
+}
+fn usable_lan_host(ip: std::net::Ipv4Addr, (net, mask): (u32, u32)) -> bool {
+    let address = u32::from(ip);
+    address & mask == net && address != net && address != (net | !mask)
+}
+/// Tailscale assigns node addresses from 100.64.0.0/10.
+pub fn tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 0x40
+}
+/// Whole-LAN scope managed over the Tailscale overlay: the router is a usable
+/// LAN host and the administrator is a Tailscale address outside the LAN.
+pub fn valid_overlay_scope(
+    scope: &str,
+    router: std::net::Ipv4Addr,
+    peer: std::net::Ipv4Addr,
+) -> bool {
+    tailscale_ipv4(peer)
+        && lan_scope_parts(scope).is_some_and(|(net, mask)| {
+            usable_lan_host(router, (net, mask)) && u32::from(peer) & mask != net
         })
+}
+/// The management rule for whole-LAN capture, shared by plan, manifest and
+/// evidence: a LAN host when started from the LAN, a Tailscale peer otherwise.
+pub fn valid_whole_lan_management(
+    scope: &str,
+    router: std::net::Ipv4Addr,
+    peer: std::net::Ipv4Addr,
+    channel: Option<ManagementChannel>,
+) -> bool {
+    match channel {
+        None => valid_lan_scope(scope, router, peer),
+        Some(ManagementChannel::Tailscale) => valid_overlay_scope(scope, router, peer),
+    }
+}
+pub fn valid_lan_scope(scope: &str, router: std::net::Ipv4Addr, peer: std::net::Ipv4Addr) -> bool {
+    router != peer
+        && lan_scope_parts(scope)
+            .is_some_and(|parts| usable_lan_host(router, parts) && usable_lan_host(peer, parts))
 }
 
 /// Atomically replace a journal and sync both contents and parent directory.

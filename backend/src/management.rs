@@ -69,6 +69,50 @@ impl TrustedAccess {
     pub fn is_overlay(&self) -> bool {
         self.overlay_address.is_some()
     }
+    /// The administrator of an accepted connection. The listener that
+    /// accepted it, not the address, decides the channel (decision 024).
+    pub fn management_peer(&self, address: IpAddr) -> Option<ManagementPeer> {
+        let IpAddr::V4(peer) = address else {
+            return None;
+        };
+        Some(match self.overlay_address {
+            Some(router) => ManagementPeer::Tailscale { peer, router },
+            None => ManagementPeer::Lan { peer },
+        })
+    }
+}
+
+/// Authenticated administrator of a runtime command. `Tailscale` carries the
+/// router's own tailscale0 address of the listener that accepted the peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "channel", rename_all = "snake_case")]
+pub enum ManagementPeer {
+    Lan { peer: Ipv4Addr },
+    Tailscale { peer: Ipv4Addr, router: Ipv4Addr },
+}
+impl ManagementPeer {
+    pub fn ipv4(self) -> Ipv4Addr {
+        match self {
+            Self::Lan { peer } | Self::Tailscale { peer, .. } => peer,
+        }
+    }
+    pub fn channel(self) -> Option<xkeenwrt_recovery::ManagementChannel> {
+        match self {
+            Self::Lan { .. } => None,
+            Self::Tailscale { .. } => Some(xkeenwrt_recovery::ManagementChannel::Tailscale),
+        }
+    }
+    pub fn overlay_router(self) -> Option<Ipv4Addr> {
+        match self {
+            Self::Lan { .. } => None,
+            Self::Tailscale { router, .. } => Some(router),
+        }
+    }
+}
+impl From<Ipv4Addr> for ManagementPeer {
+    fn from(peer: Ipv4Addr) -> Self {
+        Self::Lan { peer }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -404,6 +448,44 @@ pub fn discover_tailscale() -> Option<ManagementBoundary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn access(interface: &str, cidr: (&str, u8), overlay: Option<&str>) -> TrustedAccess {
+        TrustedAccess {
+            interface: Some(interface.into()),
+            sources: vec![Cidr::new(cidr.0.parse().unwrap(), cidr.1).unwrap()],
+            overlay_address: overlay.map(|a| a.parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn the_listener_not_the_address_decides_the_management_channel() {
+        let peer = "100.64.20.2".parse().unwrap();
+        let overlay = access("tailscale0", ("100.64.0.0", 10), Some("100.64.10.1"));
+        assert_eq!(
+            overlay.management_peer(peer),
+            Some(ManagementPeer::Tailscale {
+                peer: "100.64.20.2".parse().unwrap(),
+                router: "100.64.10.1".parse().unwrap(),
+            })
+        );
+        // A CGNAT-looking source on the LAN listener stays a LAN peer.
+        let lan = access("br-lan", ("192.168.5.0", 24), None);
+        assert_eq!(
+            lan.management_peer(peer),
+            Some(ManagementPeer::Lan {
+                peer: "100.64.20.2".parse().unwrap()
+            })
+        );
+        assert_eq!(lan.management_peer("fd00::1".parse().unwrap()), None);
+        let lan_peer = ManagementPeer::Lan {
+            peer: "192.168.5.236".parse().unwrap(),
+        };
+        assert_eq!(lan_peer.channel(), None);
+        assert_eq!(
+            overlay.management_peer(peer).unwrap().channel(),
+            Some(xkeenwrt_recovery::ManagementChannel::Tailscale)
+        );
+    }
 
     #[test]
     fn source_policy_matches_only_same_family_prefix() {

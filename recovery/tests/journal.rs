@@ -37,6 +37,7 @@ fn pending() -> Journal {
             source_ipv4: "192.0.2.2".parse().unwrap(),
             management_ipv4: "192.0.2.3".parse().unwrap(),
             management_ipv6: vec!["2001:db8::3".parse().unwrap()],
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into()],
             selected_ipv6: vec!["2001:db8::2/128".into()],
             local_ipv6: vec!["2001:db8::/64".into()],
@@ -1009,4 +1010,32 @@ fn shortage_is_reported_with_numbers_only_when_cleanup_cannot_cover_it() {
     assert_eq!(full.reclaimable_entries, 336);
     assert_eq!(listing(&root), before);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Decision 024 / spec Р11: after Stop the journal keeps the last generation's
+/// manifest. A LAN generation stays readable by an r26 rescue; a Tailscale
+/// generation carries a field r26 rejects, so rollback needs a clean reinstall.
+#[test]
+fn stopped_journal_carries_the_channel_only_for_a_tailscale_generation() {
+    let mut stopped = pending();
+    stopped.state = State::Confirmed;
+    stopped.operation = xkeenwrt_recovery::Operation::Disable;
+    stopped.applied = true;
+    let lan = serde_json::to_string(&stopped).unwrap();
+    assert!(!lan.contains("management_channel"));
+    stopped.current.lan_scope = Some("192.0.2.0/24".into());
+    stopped.current.selected_mac = String::new();
+    stopped.current.management_macs = Vec::new();
+    stopped.current.management_ipv6 = Vec::new();
+    stopped.current.selected_ipv6 = Vec::new();
+    stopped.current.source_ipv4 = "100.64.20.2".parse().unwrap();
+    stopped.current.management_ipv4 = "100.64.20.2".parse().unwrap();
+    stopped.current.management_channel = Some(xkeenwrt_recovery::ManagementChannel::Tailscale);
+    let overlay = serde_json::to_string(&stopped).unwrap();
+    assert!(overlay.contains(r#""management_channel":"tailscale""#));
+    let back: Journal = serde_json::from_str(&overlay).unwrap();
+    assert_eq!(
+        back.current.management_channel,
+        stopped.current.management_channel
+    );
 }

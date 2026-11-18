@@ -71,7 +71,7 @@ yaml-rust2 = { version = "0.13", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 semver = "1.0.28"
 similar = "3.2.1"
-ruzstd = "0.8.1"
+ruzstd = "0.9.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

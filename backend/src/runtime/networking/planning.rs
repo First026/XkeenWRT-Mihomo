@@ -16,6 +16,7 @@ pub(crate) struct PlanInput {
     pub manual_candidate_id: String,
     pub selected_ipv4: Ipv4Addr,
     pub management_ipv4: Ipv4Addr,
+    pub management_channel: Option<xkeenwrt_recovery::ManagementChannel>,
     pub selected_ipv6: Vec<String>,
     pub management_ipv6: Vec<Ipv6Addr>,
     pub failure_policy: network::FailurePolicy,
@@ -117,6 +118,7 @@ pub(crate) fn prepare<V: Validator>(
         local_ipv4: i.local_ipv4.clone(),
         selected_ipv6: input.selected_ipv6,
         management_ipv6: Some(observed.management_ipv6.clone()),
+        management_channel: input.management_channel,
         local_ipv6: i.local_ipv6.clone(),
         candidate_id: input.manual_candidate_id.clone(),
         previous_table: input

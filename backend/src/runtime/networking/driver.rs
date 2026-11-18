@@ -64,6 +64,7 @@ pub(crate) struct OpenWrtDriver<'a, V: Validator> {
     incarnation: xkeenwrt_recovery::RuntimeIncarnationIdentity,
     supervisor: Option<helper::SupervisorIdentity>,
     consume_marker: bool,
+    remote: Option<super::remote_check::RemoteCheck>,
 }
 impl<'a, V: Validator> OpenWrtDriver<'a, V> {
     pub fn new(
@@ -78,6 +79,7 @@ impl<'a, V: Validator> OpenWrtDriver<'a, V> {
             incarnation,
             supervisor: None,
             consume_marker: false,
+            remote: None,
         }
     }
     pub(crate) fn attach_pending(&mut self, pending: &Pending) -> Result<(), Error> {
@@ -135,6 +137,7 @@ impl<'a, V: Validator> OpenWrtDriver<'a, V> {
             source_ipv4: m.source_ipv4,
             management_ipv4: m.management_ipv4,
             management_ipv6: m.management_ipv6.clone(),
+            management_channel: m.management_channel,
             local_ipv4: m.local_ipv4.clone(),
             selected_ipv6: m.selected_ipv6.clone(),
             local_ipv6: m.local_ipv6.clone(),
@@ -154,6 +157,10 @@ impl<'a, V: Validator> OpenWrtDriver<'a, V> {
             xkeenwrt_recovery::nft_semantic_digest(&serde_json::to_vec(&ast).map_err(|_| Error::Storage)?)
                 .map_err(|_| Error::NotReady)?;
         Ok(result)
+    }
+    /// Report of the probes run by the last remote confirmation, if any.
+    pub(crate) fn remote_report(&self) -> Option<&super::remote_check::RemoteCheck> {
+        self.remote.as_ref()
     }
     pub(crate) fn secure_journal() -> Result<Option<Journal>, Error> {
         super::compatibility::network_journal(Path::new(CONFIG)).map_err(|_| Error::Storage)
@@ -178,6 +185,7 @@ impl<'a, V: Validator> OpenWrtDriver<'a, V> {
             local_ipv4: m.local_ipv4.clone(),
             selected_ipv6: m.selected_ipv6.clone(),
             management_ipv6: Some(m.management_ipv6.clone()),
+            management_channel: m.management_channel,
             local_ipv6: m.local_ipv6.clone(),
             candidate_id: m.candidate_id.clone(),
             previous_table: plan
@@ -569,6 +577,7 @@ impl<V: Validator> Driver for OpenWrtDriver<'_, V> {
                 &m.lan_interface,
                 m.source_ipv4,
                 m.management_ipv4,
+                m.management_channel,
                 now,
                 previous_manifest,
                 self.cgroup.as_ref().ok_or(Error::NotReady)?,
@@ -816,6 +825,7 @@ impl<V: Validator> Driver for OpenWrtDriver<'_, V> {
             &m.lan_interface,
             m.source_ipv4,
             m.management_ipv4,
+            m.management_channel,
             now,
             self.plan.previous.as_ref(),
             self.cgroup.as_ref().ok_or(Error::NotReady)?,
@@ -876,6 +886,7 @@ impl<V: Validator> Driver for OpenWrtDriver<'_, V> {
                     &m.lan_interface,
                     m.source_ipv4,
                     m.management_ipv4,
+                    m.management_channel,
                     now,
                     prepared.previous.as_ref(),
                     &cgroup_for_reads,
@@ -1012,6 +1023,22 @@ impl<V: Validator> Driver for OpenWrtDriver<'_, V> {
     fn health(&mut self, _: &Pending) -> Result<bool, Error> {
         Ok(self.core.health().is_ok())
     }
+    fn remote_check(&mut self, _: &Pending) -> Result<(), Error> {
+        let m = self.plan.network.manifest();
+        if m.management_channel.is_none() {
+            return Ok(());
+        }
+        let (Some(scope), Some(probe)) = (
+            m.lan_scope.clone(),
+            super::remote_check::LiveProbe::new(&self.core.secret),
+        ) else {
+            return Err(Error::NotReady);
+        };
+        let report = super::remote_check::run(&probe, m.lan_address, &scope);
+        let verdict = report.verdict();
+        self.remote = Some(report);
+        verdict
+    }
     fn confirmed_for(&mut self, request: &Request) -> Result<Option<String>, Error> {
         let Some(journal) = Self::secure_journal()? else {
             return Ok(None);
@@ -1130,6 +1157,7 @@ mod tests {
             source_ipv4: Ipv4Addr::new(192, 0, 2, 2),
             management_ipv4: Ipv4Addr::new(192, 0, 2, 3),
             management_ipv6: vec!["2001:db8::3".parse().unwrap()],
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into()],
             selected_ipv6: vec![],
             local_ipv6: vec!["2001:db8::/64".into()],
@@ -1155,6 +1183,7 @@ mod tests {
                 management_ipv4: manifest.management_ipv4,
                 management_macs: manifest.management_macs.clone(),
                 management_ipv6: manifest.management_ipv6.clone(),
+                management_channel: manifest.management_channel,
                 local_ipv4: manifest.local_ipv4.clone(),
                 local_ipv6: manifest.local_ipv6.clone(),
             },

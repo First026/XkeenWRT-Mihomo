@@ -64,8 +64,8 @@ export function ManagedInputs({
         <p className="text-muted-foreground text-xs">Выключение перехвата сохраняет включённый HTTP/SOCKS. Верхняя кнопка «Остановить» останавливает Mihomo и оба режима.</p>
         <Button size="sm" variant="outline" disabled={busy || pending || !['active', 'degraded', 'pending'].includes(networkState)} onClick={() => void operation('gateway_off')}>Выключить перехват</Button>
       </section>
-      {running && <Button size="sm" variant="outline" disabled={busy || pending || remoteAdmin || stale} onClick={onRestart}>Перезапустить</Button>}
-      {remoteAdmin && <p className="text-muted-foreground text-xs">Панель открыта через Tailscale: состояние и остановка доступны. Включение режимов, применение работающего шлюза и перезапуск выполняются из основной IPv4 LAN.</p>}
+      {running && <Button size="sm" variant="outline" disabled={busy || pending || (remoteAdmin && !!inputs?.explicit_selected) || stale} onClick={onRestart}>Перезапустить</Button>}
+      {remoteAdmin && <p className="text-muted-foreground text-xs">Панель открыта через Tailscale: запуск, перезапуск шлюза, применение и остановка доступны — роутер сам проверит DNS и выход в интернет. HTTP/SOCKS включается и перезапускается только из основной IPv4 LAN.</p>}
     </div>
   )
 }

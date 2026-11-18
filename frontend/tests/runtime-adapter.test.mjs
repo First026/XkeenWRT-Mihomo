@@ -103,3 +103,17 @@ test('an explicit BUSY rejection retries the same apply key, but an uncertain tr
   }))
   assert.equal(attempts, 1)
 })
+
+test('status carries the Tailscale channel and a well-formed remote check only', async () => {
+  const { controlStatusFromReply } = await import('../src/lib/runtime-adapter.ts')
+  const remote = {dns:true,egress:{state:'ok',node:'🇩🇪 reality-Тест',delay_ms:49},lan_clients:2}
+  const status = controlStatusFromReply({running:true,network:{state:'active',management_channel:'tailscale',remote_check:remote}})
+  assert.equal(status.managementChannel, 'tailscale')
+  assert.deepEqual(status.remoteCheck, remote)
+  const lan = controlStatusFromReply({running:true,network:{state:'active',management_channel:null,remote_check:null}})
+  assert.equal(lan.managementChannel, undefined)
+  assert.equal(lan.remoteCheck, undefined)
+  const forged = controlStatusFromReply({running:true,network:{state:'active',management_channel:'wan',remote_check:{dns:'yes',egress:{state:'ok'}}}})
+  assert.equal(forged.managementChannel, undefined)
+  assert.equal(forged.remoteCheck, undefined)
+})

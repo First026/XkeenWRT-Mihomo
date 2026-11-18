@@ -9,4 +9,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 yaml-rust2 = { version = "0.13", default-features = false }
 idna = "1.1"
-ruzstd = "0.8.1"
+ruzstd = "0.9.1"

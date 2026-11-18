@@ -33,6 +33,9 @@ function usageColorClass(percent: number) {
   return 'text-muted-foreground'
 }
 
+const REMOTE_START_HINT =
+  'Через Tailscale: после включения роутер сам проверит DNS и выход в интернет; если проверка не пройдёт — сразу вернётся Direct'
+
 export function StatusBar({
   onOpenCoreManage,
   onOpenSettings,
@@ -44,6 +47,7 @@ export function StatusBar({
   appliedProfile,
   networkState,
   recoveryNotice,
+  remoteCheck,
   remoteAdmin=false,
   stale=false,
 }: {
@@ -56,6 +60,7 @@ export function StatusBar({
   startDisabledReason?: string
   networkState?: string
   recoveryNotice?: 'SNAPSHOT_MISSING'
+  remoteCheck?: import('../../lib/runtime-adapter').RemoteCheck
   remoteAdmin?:boolean
   stale?: boolean
   appliedProfile?: string | null
@@ -118,7 +123,7 @@ export function StatusBar({
                   </div>
                   <span className="text-foreground/80 text-xs font-medium">{statusText}</span>
                 </div>
-                <LanGatewayStatus networkState={networkState} recoveryNotice={recoveryNotice} stale={stale} />
+                <LanGatewayStatus networkState={networkState} recoveryNotice={recoveryNotice} remoteCheck={remoteCheck} stale={stale} />
                 <span className="text-muted-foreground flex items-center gap-1.5 text-[11px] tracking-tight whitespace-nowrap">
                   <span className="flex items-center gap-1">
                     <IconMemory
@@ -158,8 +163,8 @@ export function StatusBar({
                               className="text-emerald-500 hover:border-emerald-500/50 hover:text-emerald-400"
                               aria-label="Запустить"
                               onClick={onStart}
-                              disabled={isPending || !!startDisabledReason||remoteAdmin||stale}
-                              title={startDisabledReason ?? 'Запустить Mihomo и шлюз IPv4 LAN по YAML'}
+                              disabled={isPending || !!startDisabledReason||stale}
+                              title={startDisabledReason ?? (remoteAdmin ? REMOTE_START_HINT : 'Запустить Mihomo и шлюз IPv4 LAN по YAML')}
                             >
                               {isPending ? (
                                 <Spinner className="text-muted-foreground size-3.5" />
@@ -169,7 +174,7 @@ export function StatusBar({
                             </Button>
                           }
                         />
-                        <TooltipContent>{startDisabledReason ?? `Запустить Mihomo и шлюз LAN: ${appliedProfile ?? ""}`}</TooltipContent>
+                        <TooltipContent>{startDisabledReason ?? (remoteAdmin ? REMOTE_START_HINT : `Запустить Mihomo и шлюз LAN: ${appliedProfile ?? ""}`)}</TooltipContent>
                       </Tooltip>
                     )}
                     {(isRunning || serviceStatus === 'unknown' || isPending || stale) && (

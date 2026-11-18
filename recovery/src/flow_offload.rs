@@ -854,6 +854,7 @@ mod tests {
             source_ipv4: "192.0.2.101".parse().unwrap(),
             management_ipv4: "192.0.2.101".parse().unwrap(),
             management_ipv6: Vec::new(),
+            management_channel: None,
             local_ipv4: vec!["192.0.2.0/24".into(), "198.51.100.0/24".into()],
             selected_ipv6: Vec::new(),
             local_ipv6: vec!["fe80::/10".into()],
