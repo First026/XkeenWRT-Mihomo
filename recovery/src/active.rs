@@ -450,8 +450,14 @@ pub fn process(
     if r.phase == Phase::Completed {
         return r.outcome.ok_or(Code::Invalid);
     }
+    // A RECOVERY code is a transient command or I/O failure of an owned step;
+    // every kind resumes from that step, at most twice (decision 025). Without
+    // this an owner Disable that failed once stayed in Error and Stop was BUSY.
     let retry = r.phase == Phase::Error
-        && matches!(r.kind, Kind::CoreFailed | Kind::ReconcileRequested)
+        && matches!(
+            r.kind,
+            Kind::CoreFailed | Kind::ReconcileRequested | Kind::DisableRequested
+        )
         && r.error_code.as_deref() == Some(Code::Recovery.as_str())
         && r.retry_failures.len() < 2
         && r.failed_phase.is_some_and(|p| {

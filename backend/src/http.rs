@@ -140,6 +140,7 @@ struct App {
     preview: bool,
     trusted_access: Option<crate::management::TrustedAccess>,
     core_updates: Arc<crate::core_update::Manager>,
+    self_update: Arc<crate::self_update::Updater>,
     preparation_capacity: Arc<tokio::sync::Semaphore>,
     runtime_capacity: Arc<tokio::sync::Semaphore>,
     status_snapshot: Arc<snapshot::StatusSnapshot>,
@@ -259,6 +260,13 @@ fn result(code: StatusCode, message: &str) -> Response {
         "RESCUE_NOT_READY" => "Persistent recovery is unavailable or incompatible",
         "CONFLICT" => "Profile changed; read the latest revision",
         "AUTH_STORAGE_ERROR" => "Authentication could not be saved; check local storage and restart",
+        "GATEWAY_RUNNING" => "Перед обновлением нажмите «Остановить»",
+        "UPDATE_RUNNING" => "Обновление XkeenWRT уже идёт",
+        "NOT_NEWER" => "Можно выбрать только версию новее установленной",
+        "UNKNOWN_RELEASE" => "Такого релиза XkeenWRT нет на GitHub",
+        "INSTALLER_INVALID" => "Установщик релиза не прошёл проверку",
+        "GITHUB_UNAVAILABLE" => "GitHub недоступен с роутера",
+        "UPDATE_LAUNCH_FAILED" => "Не удалось запустить установщик",
         _ => message,
     };
     (
@@ -1232,6 +1240,53 @@ async fn core_update_start(State(app): State<App>, Json(req): Json<CoreUpdateReq
         Err(_) => result(StatusCode::SERVICE_UNAVAILABLE, "NOT_READY"),
     }
 }
+// Panel self-update (decision 026): newer releases only, gateway stopped.
+async fn self_catalog(State(app): State<App>) -> Response {
+    if app.preview {
+        return result(StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED");
+    }
+    match app.self_update.catalog().await {
+        Ok((current, releases)) => Json(serde_json::json!({
+            "success": true,
+            "repository": crate::self_update::REPO,
+            "current": current.to_string(),
+            "releases": releases,
+        }))
+        .into_response(),
+        Err(code) => self_update_error(code),
+    }
+}
+async fn self_update_start(State(app): State<App>, Json(req): Json<CoreUpdateRequest>) -> Response {
+    if app.preview {
+        return result(StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED");
+    }
+    if !matches!(Platform::service_status(), Ok(crate::platform::ServiceStatus::Stopped)) {
+        return result(StatusCode::CONFLICT, "GATEWAY_RUNNING");
+    }
+    match app.self_update.start(&req.version).await {
+        Ok(()) => Json(serde_json::json!({"success":true})).into_response(),
+        Err(code) => self_update_error(code),
+    }
+}
+async fn self_update_status(State(app): State<App>) -> Response {
+    if app.preview {
+        return result(StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED");
+    }
+    let status = app.self_update.status().await;
+    let mut body = serde_json::to_value(&status).unwrap_or_default();
+    body["success"] = true.into();
+    body["current"] = option_env!("XKEENWRT_PACKAGE_VERSION").unwrap_or("development").into();
+    Json(body).into_response()
+}
+fn self_update_error(code: &'static str) -> Response {
+    let status = match code {
+        "UPDATE_RUNNING" => StatusCode::CONFLICT,
+        "NOT_NEWER" | "UNKNOWN_RELEASE" => StatusCode::BAD_REQUEST,
+        "INSTALLER_INVALID" | "GITHUB_UNAVAILABLE" => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    result(status, code)
+}
 async fn core_update_cancel(State(app): State<App>) -> Response {
     match app.core_updates.cancel() {
         Ok(()) => Json(serde_json::json!({"success":true})).into_response(),
@@ -1713,6 +1768,7 @@ fn app_state(
         preview,
         trusted_access,
         core_updates: Arc::new(crate::core_update::Manager::new()),
+        self_update: Arc::new(crate::self_update::Updater::default()),
         preparation_capacity: Arc::new(tokio::sync::Semaphore::new(1)),
         runtime_capacity: Arc::new(tokio::sync::Semaphore::new(1)),
         status_snapshot: Arc::new(snapshot::StatusSnapshot::default()),
@@ -1776,6 +1832,9 @@ fn routes(state: App) -> Router {
         .route("/api/core/update/cancel", post(core_update_cancel))
         .route("/api/core/update/rollback", post(core_update_rollback))
         .route("/ws/core-update", get(core_update_ws))
+        .route("/api/self/catalog", get(self_catalog))
+        .route("/api/self/update", post(self_update_start))
+        .route("/api/self/update/status", get(self_update_status))
         .route(
             "/api/network/plan",
             post(network_plan).layer(DefaultBodyLimit::max(4096)),

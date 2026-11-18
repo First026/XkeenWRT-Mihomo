@@ -356,6 +356,25 @@ pub struct Native<'a> {
 fn recovery<T>(v: io::Result<T>) -> Result<T, Code> {
     v.map_err(|_| Code::Recovery)
 }
+/// One line for the system log (procd stderr of the rescue supervisor) naming
+/// the owned step behind a RECOVERY verdict. The durable record keeps only the
+/// code; std I/O errors carry no paths or secrets, only the OS error text.
+fn step_failure_line(step: &str, e: &io::Error) -> String {
+    format!(
+        "recovery step failed: step={step} kind={:?} os_error={:?}: {e}",
+        e.kind(),
+        e.raw_os_error()
+    )
+}
+/// Like `recovery`, for steps that change the network or the core. They run
+/// at most three times per event (one try and two retries), so this cannot
+/// flood the log; periodic observations keep the silent `recovery`.
+fn step<T>(name: &str, v: io::Result<T>) -> Result<T, Code> {
+    v.map_err(|e| {
+        eprintln!("{}", step_failure_line(name, &e));
+        Code::Recovery
+    })
+}
 impl Adapter for Native<'_> {
     fn restore_admissible(&mut self, j: &Journal) -> Result<bool, Code> {
         match verify_restore(j, None) {
@@ -374,8 +393,10 @@ impl Adapter for Native<'_> {
     fn secure_nft(&mut self, j: &Journal, a: Action) -> Result<(), Code> {
         let view = active_view(j)?;
         match a {
-            Action::Direct | Action::Disable => recovery(rollback::active_remove_nft(&view)),
-            Action::Block => recovery(rollback::active_block_nft(&view)),
+            Action::Direct | Action::Disable => {
+                step("remove_nft", rollback::active_remove_nft(&view))
+            }
+            Action::Block => step("block_nft", rollback::active_block_nft(&view)),
             Action::Restore => verify_restore(j, None),
         }
     }
@@ -383,14 +404,14 @@ impl Adapter for Native<'_> {
         let view = active_view(j)?;
         match a {
             Action::Direct | Action::Block | Action::Disable => {
-                recovery(rollback::active_remove_routes(&view))
+                step("remove_routes", rollback::active_remove_routes(&view))
             }
             Action::Restore => {
                 // On replay the route phase may already have completed.
                 verify_restore(j, None)?;
-                recovery(rollback::active_restore_route(&view))?;
+                step("restore_route", rollback::active_restore_route(&view))?;
                 verify_restore(j, None)?;
-                recovery(rollback::active_restore_rule(&view))
+                step("restore_rule", rollback::active_restore_rule(&view))
             }
         }
     }
@@ -399,20 +420,29 @@ impl Adapter for Native<'_> {
             return Err(Code::Invalid);
         }
         verify_restore(j, Some((true, true)))?;
-        recovery(rollback::active_restore_nft(&active_view(j)?))
+        step(
+            "restore_nft",
+            rollback::active_restore_nft(&active_view(j)?),
+        )
     }
     fn restore_baseline(&mut self, j: &Journal) -> Result<(), Code> {
-        recovery(core::restore(&j.baseline_core))
+        step("restore_baseline", core::restore(&j.baseline_core))
     }
     fn verify_final(&mut self, j: &Journal, a: Action) -> Result<(), Code> {
         use rollback::ActiveNftState::*;
         let view = active_view(j)?;
         match a {
-            Action::Direct => recovery(rollback::active_verify(&view, Missing, false)),
+            Action::Direct => step(
+                "verify_direct",
+                rollback::active_verify(&view, Missing, false),
+            ),
             // Baseline contents and instance identity must be revalidated even
             // when resuming after a crash, before issuing a durable receipt.
             Action::Disable => {
-                recovery(rollback::active_verify(&view, Missing, false))?;
+                step(
+                    "verify_disabled",
+                    rollback::active_verify(&view, Missing, false),
+                )?;
                 let matches = if j.baseline_core.running {
                     crate::health::observe(&j.baseline_core)? == CoreHealth::Healthy
                 } else {
@@ -420,16 +450,25 @@ impl Adapter for Native<'_> {
                 };
                 if matches { Ok(()) } else { Err(Code::Health) }
             }
-            Action::Block => recovery(rollback::active_verify(&view, Failblock, false)),
+            Action::Block => step(
+                "verify_block",
+                rollback::active_verify(&view, Failblock, false),
+            ),
             Action::Restore => {
                 verify_restore(j, Some((true, true)))?;
-                recovery(rollback::active_verify(&view, Current, true))
+                step(
+                    "verify_restore",
+                    rollback::active_verify(&view, Current, true),
+                )
             }
         }
     }
     fn mark_disabled(&mut self, j: &mut Journal) -> Result<(), Code> {
         j.finish_disable();
-        recovery(write_journal(Path::new("/etc/xkeenwrt"), j))
+        step(
+            "write_journal",
+            write_journal(Path::new("/etc/xkeenwrt"), j),
+        )
     }
     fn persist(&mut self, r: &ActiveRecord) -> Result<(), Code> {
         persist_record(r).map_err(|_| Code::Storage)
@@ -772,5 +811,47 @@ pub(crate) mod history_tests {
         assert!(archived.valid_binding(&j));
         assert!(j.boot_cleanup_complete());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod step_log_tests {
+    use super::*;
+
+    #[test]
+    fn failed_step_line_names_the_step_kind_and_os_error() {
+        let line = step_failure_line(
+            "restore_baseline",
+            &io::Error::from_raw_os_error(libc::ESRCH),
+        );
+        assert!(
+            line.starts_with("recovery step failed: step=restore_baseline "),
+            "{line}"
+        );
+        assert!(
+            line.contains(&format!("os_error=Some({})", libc::ESRCH)),
+            "{line}"
+        );
+        let line = step_failure_line(
+            "restore_baseline",
+            &io::Error::new(io::ErrorKind::TimedOut, "core did not stop"),
+        );
+        assert!(
+            line.contains("kind=TimedOut") && line.contains("os_error=None"),
+            "{line}"
+        );
+        assert!(
+            line.ends_with(": core did not stop") && !line.contains('\n'),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_failed_step_is_still_a_recovery_code() {
+        assert_eq!(
+            step::<()>("remove_nft", Err(io::Error::other("boom"))),
+            Err(Code::Recovery)
+        );
+        assert_eq!(step("remove_nft", Ok(5)), Ok(5));
     }
 }

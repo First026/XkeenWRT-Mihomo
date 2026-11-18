@@ -774,3 +774,107 @@ fn foreign_boot_cleans_pending_revoked_and_split_disable_without_restoring_netwo
         "durable Disabled plus Verified event must settle after reboot"
     );
 }
+
+/// 0.1.26.3 lab, run 3: a one-off I/O error while restoring the baseline core
+/// (after nft and routes were already gone) left the owner's Disable in Error
+/// for good, and every later Stop answered BUSY. It must resume from the
+/// failed step under the same two-retry bound as CoreFailed.
+#[test]
+fn transient_baseline_failure_resumes_owner_disable() {
+    use xkeenwrt_recovery::active::{
+        ActiveRecord, Code, Kind, Outcome, Phase, decode, encode, process,
+    };
+    let mut j = journal();
+    let mut event = ActiveRecord::new(
+        &j,
+        "00000000-0000-4000-8000-000000000007",
+        Kind::DisableRequested,
+        Some("service-stop-1".into()),
+    )
+    .unwrap();
+    let mut driver = Fake {
+        fail: Some("baseline"),
+        fail_code: Some(Code::Recovery),
+        ..Fake::default()
+    };
+    assert_eq!(
+        process(&mut j, &mut event, &mut driver),
+        Err(Code::Recovery)
+    );
+    assert_eq!(event.phase, Phase::Error);
+    assert_eq!(event.failed_phase, Some(Phase::RoutingDone));
+    assert_ne!(j.state, State::Disabled);
+    event = decode(&encode(&event).unwrap()).unwrap();
+    driver.fail = None;
+    driver.calls.clear();
+    assert_eq!(
+        process(&mut j, &mut event, &mut driver),
+        Ok(Outcome::Disabled)
+    );
+    assert_eq!(j.state, State::Disabled);
+    assert_eq!(event.phase, Phase::Completed);
+    assert_eq!(event.retry_failures.len(), 1);
+    assert_eq!(event.retry_failures[0].phase, Phase::RoutingDone);
+    let steps: Vec<_> = driver
+        .calls
+        .iter()
+        .copied()
+        .filter(|x| *x != "persist")
+        .collect();
+    assert_eq!(
+        steps,
+        ["baseline", "verify", "verify", "commit"],
+        "resume, never redo nft or routes"
+    );
+    assert!(event.valid_for(&j));
+}
+
+#[test]
+fn owner_disable_retry_is_bounded_and_only_for_recovery_errors() {
+    use xkeenwrt_recovery::active::{ActiveRecord, Code, Kind, Phase, decode, encode, process};
+    let mut j = journal();
+    let mut event = ActiveRecord::new(
+        &j,
+        "00000000-0000-4000-8000-000000000007",
+        Kind::DisableRequested,
+        Some("service-stop-1".into()),
+    )
+    .unwrap();
+    let mut driver = Fake {
+        fail: Some("baseline"),
+        fail_code: Some(Code::Recovery),
+        ..Fake::default()
+    };
+    for _ in 0..8 {
+        assert_eq!(
+            process(&mut j, &mut event, &mut driver),
+            Err(Code::Recovery)
+        );
+        event = decode(&encode(&event).unwrap()).unwrap();
+    }
+    assert_eq!(driver.calls.iter().filter(|c| **c == "baseline").count(), 3);
+    assert_eq!(event.retry_failures.len(), 2);
+    assert_eq!(event.phase, Phase::Error);
+    // A health or drift verdict is not transient: it is never retried.
+    let mut j = journal();
+    let mut event = ActiveRecord::new(
+        &j,
+        "00000000-0000-4000-8000-000000000007",
+        Kind::DisableRequested,
+        Some("service-stop-2".into()),
+    )
+    .unwrap();
+    let mut driver = Fake {
+        fail: Some("verify"),
+        fail_code: Some(Code::Health),
+        ..Fake::default()
+    };
+    assert_eq!(process(&mut j, &mut event, &mut driver), Err(Code::Health));
+    driver.fail = None;
+    assert_eq!(
+        process(&mut j, &mut event, &mut driver),
+        Err(Code::Recovery)
+    );
+    assert!(event.retry_failures.is_empty());
+    assert_ne!(j.state, State::Disabled);
+}

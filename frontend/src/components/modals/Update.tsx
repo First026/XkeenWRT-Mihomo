@@ -18,6 +18,7 @@ import type { Release } from '../../lib/types'
 import type { UpdateEvent, WsMessage } from '../../lib/websocket'
 import { useUpdateWebSocket } from '../../lib/websocket'
 import { cn } from '../../lib/utils'
+import { nextPhase, rememberPendingUpdate, selfReleases, type SelfCatalog, type SelfPhase, type SelfStatus } from '../../lib/self-update'
 
 const LEVEL_CLASSES: Record<string, string> = {
   info: 'text-foreground/80',
@@ -310,10 +311,193 @@ function UpdateProcessModal({ open, core, coreLabel, version, onInstalled, onSta
   )
 }
 
-export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
+interface SelfProcessProps {
+  open: boolean
+  version: string
+  onStartFailed: () => void
+  onClose: () => void
+}
+
+const SELF_UPDATE_DEADLINE_MS = 15 * 60_000
+
+/**
+ * Panel self-update (decision 026). The router runs the release's own installer
+ * in a separate service; the APK upgrade restarts this panel, so the window
+ * polls the status and treats a silent panel as the restart, not as a failure.
+ */
+function SelfUpdateProcessModal({ open, version, onStartFailed, onClose }: SelfProcessProps) {
   const { dispatch, showToast } = useAppContext()
+  const [log, setLog] = useState<string[]>([])
+  const [phase, setPhase] = useState<SelfPhase | { kind: 'starting' } | { kind: 'relogin' }>({ kind: 'starting' })
+  const logRef = useRef<HTMLPreElement>(null)
+  const startedRef = useRef(false)
+  const aliveRef = useRef(true)
+  const propsRef = useRef({ version, showToast, onStartFailed })
+  useEffect(() => {
+    propsRef.current = { version, showToast, onStartFailed }
+  })
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+
+  const restoreStatus = useCallback(() => {
+    apiCall<any>('GET', 'control')
+      .then((data) => {
+        if (data.success) {
+          dispatch({ type: 'SET_SERVICE_STATUS', status: data.running === true ? 'running' : data.running === false ? 'stopped' : 'unknown' })
+        }
+      })
+      .catch(() => dispatch({ type: 'SET_SERVICE_STATUS', status: 'unknown' }))
+  }, [dispatch])
+
+  useEffect(() => {
+    if (startedRef.current) return
+    startedRef.current = true
+    const { version, showToast, onStartFailed } = propsRef.current
+    const deadline = Date.now() + SELF_UPDATE_DEADLINE_MS
+    const poll = async () => {
+      if (!aliveRef.current) return
+      let reply: SelfStatus | null = null
+      try {
+        const response = await fetch('/api/self/update/status', { signal: AbortSignal.timeout(5000) })
+        if (response.status === 401) {
+          // The new panel is up but has forgotten this login: read the result after sign-in.
+          rememberPendingUpdate(version)
+          setPhase({ kind: 'relogin' })
+          window.setTimeout(() => window.location.reload(), 2500)
+          return
+        }
+        if (response.ok) reply = (await response.json()) as SelfStatus
+      } catch {
+        reply = null
+      }
+      if (!aliveRef.current) return
+      if (reply?.log?.length) setLog(reply.log)
+      const next = nextPhase(version, reply)
+      if (next.kind === 'done') {
+        setPhase(next)
+        showToast(`XkeenWRT ${version} установлен. Запустите шлюз кнопкой «Запустить».`)
+        window.setTimeout(() => window.location.reload(), 2000)
+        return
+      }
+      if (next.kind === 'failed') {
+        setPhase(next)
+        showToast(next.message, 'error')
+        restoreStatus()
+        return
+      }
+      if (Date.now() > deadline) {
+        setPhase({ kind: 'failed', message: 'Панель не ответила за 15 минут. Проверьте роутер по SSH.' })
+        restoreStatus()
+        return
+      }
+      setPhase(next)
+      window.setTimeout(poll, 1500)
+    }
+    apiCall<{ success: boolean }>('POST', 'self/update', { version })
+      .then(() => {
+        setPhase({ kind: 'running' })
+        window.setTimeout(poll, 1000)
+      })
+      .catch((error) => {
+        showToast(error instanceof Error ? error.message : 'Не удалось запустить обновление', 'error')
+        restoreStatus()
+        onStartFailed()
+      })
+  }, [restoreStatus])
+
+  useEffect(() => {
+    const el = logRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [log])
+
+  const finished = phase.kind === 'failed' || phase.kind === 'done'
+  const status =
+    phase.kind === 'starting'
+      ? 'Проверка релиза и запуск установщика…'
+      : phase.kind === 'running'
+        ? 'Установщик работает на роутере…'
+        : phase.kind === 'restarting'
+          ? 'Панель перезапускается на новой версии…'
+          : phase.kind === 'relogin'
+            ? 'Панель перезапущена. Войдите снова — результат покажется после входа.'
+            : phase.kind === 'done'
+              ? `✓ XkeenWRT ${version} установлен`
+              : phase.message
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && finished && phase.kind !== 'done' && onClose()}>
+      <DialogContent showCloseButton={phase.kind === 'failed'} className="w-full max-w-[95vw]! p-0! md:w-150">
+        <div className="flex flex-col gap-4 p-6">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2 pr-8">
+              <IconDownload size={24} className="text-chart-2" />
+              Обновление XkeenWRT до {version}
+            </DialogTitle>
+            <DialogDescription>Шлюз остаётся остановленным; после обновления нажмите «Запустить».</DialogDescription>
+          </DialogHeader>
+
+          <div className={cn('flex items-center gap-2 text-sm', phase.kind === 'failed' ? 'text-red-400' : phase.kind === 'done' ? 'text-green-400' : '')}>
+            {!finished && <Spinner className="text-chart-2 size-4" />}
+            <span className="wrap-anywhere">{status}</span>
+          </div>
+
+          <CodeBlock size="sm" className="bg-muted/30 ring-ring/10 border-none ring-1">
+            <CodeBlockContent
+              ref={logRef}
+              wrap
+              className="h-72 [&>code:has([data-slot=empty])]:h-full [&>code:has([data-slot=empty])]:content-center"
+            >
+              {log.length === 0 ? (
+                <Empty className="p-2 font-sans">
+                  <EmptyMedia variant="icon">
+                    <IconLogs />
+                  </EmptyMedia>
+                  <EmptyTitle>Журнал пуст</EmptyTitle>
+                  <EmptyDescription>Ожидание вывода установщика...</EmptyDescription>
+                </Empty>
+              ) : (
+                log.map((line, i) => (
+                  <div key={i} className={cn('wrap-anywhere', line.startsWith('XkeenWRT:') ? LEVEL_CLASSES.error : LEVEL_CLASSES.info)}>
+                    {line}
+                  </div>
+                ))
+              )}
+            </CodeBlockContent>
+          </CodeBlock>
+
+          <DialogFooter className="shrink-0">
+            {phase.kind === 'failed' ? (
+              <Button onClick={onClose} className="w-full">
+                Закрыть
+              </Button>
+            ) : phase.kind === 'done' ? (
+              <Button onClick={() => window.location.reload()} className="w-full gap-1.5">
+                <IconRefresh size={16} />
+                Перезагрузить
+              </Button>
+            ) : (
+              <Button disabled className="w-full">
+                Обновление идёт — не закрывайте страницу
+              </Button>
+            )}
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
+  const { state, dispatch, showToast } = useAppContext()
   const { modals } = useModalContext()
   const { updateModalCore } = modals
+  const isSelf = updateModalCore === 'self'
+  const gatewayRunning = isSelf && state.serviceStatus === 'running'
+  const [selfCurrent, setSelfCurrent] = useState('')
   const [releases, setReleases] = useState<Release[]>([])
   const [selectedVersion, setSelectedVersion] = useState('')
   const [openVersion, setOpenVersion] = useState('')
@@ -322,8 +506,8 @@ export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
   const [step, setStep] = useState<'select' | 'process'>('select')
   const [pending, setPending] = useState<{ version: string } | null>(null)
 
-  const coreLabel = 'Mihomo'
-  const repo = 'MetaCubeX/mihomo · AArch64 · каталог с закреплёнными SHA-256'
+  const coreLabel = isSelf ? 'XkeenWRT' : 'Mihomo'
+  const repo = isSelf ? 'First026/XkeenWRT-Mihomo · установщик релиза' : 'MetaCubeX/mihomo · AArch64 · каталог с закреплёнными SHA-256'
   const close = () => dispatch({ type: 'SHOW_MODAL', modal: 'showUpdateModal', show: false })
 
   useEffect(() => {
@@ -343,6 +527,19 @@ export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
     setReleases([])
     setSource('')
     try {
+      if (updateModalCore === 'self') {
+        const catalog = await apiCall<SelfCatalog>('GET', 'self/catalog')
+        const parsed = selfReleases(catalog)
+        setSelfCurrent(catalog.current)
+        setReleases(parsed)
+        if (parsed.length) {
+          setSelectedVersion(parsed.at(-1)!.version)
+          setOpenVersion(parsed.at(-1)!.version)
+        }
+        setSource('github')
+        setLoading(false)
+        return
+      }
       if (updateModalCore !== 'mihomo') throw new Error('Unsupported core')
       const catalog = await apiCall<{ releases: Array<{ version: string; published: string; assetSize: number; elfSha256: string }> }>('GET', 'core/catalog')
       const parsed = catalog.releases.map((release) => ({
@@ -360,8 +557,8 @@ export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
       setSource('github')
       setLoading(false)
       return
-    } catch {
-      showToast('Не удалось получить список релизов', 'error')
+    } catch (error) {
+      showToast(isSelf && error instanceof Error ? error.message : 'Не удалось получить список релизов', 'error')
     }
     setLoading(false)
   }
@@ -425,7 +622,10 @@ export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
                     <EmptyMedia variant="icon">
                       <IconPlaylistX className="size-8" />
                     </EmptyMedia>
-                    <EmptyTitle className="text-[16px] tracking-normal">Нет доступных релизов</EmptyTitle>
+                    <EmptyTitle className="text-[16px] tracking-normal">
+                      {isSelf && selfCurrent ? 'Установлена последняя версия' : 'Нет доступных релизов'}
+                    </EmptyTitle>
+                    {isSelf && selfCurrent && <EmptyDescription>XkeenWRT {selfCurrent}</EmptyDescription>}
                   </EmptyHeader>
                   <EmptyContent>
                     <Button variant="outline" size="sm" onClick={fetchReleases} className="bg-card! hover:bg-input! gap-1.5">
@@ -523,15 +723,37 @@ export function UpdateModal({ onInstalled }: { onInstalled: () => void }) {
             </ScrollArea>
 
             <DialogFooter className="shrink-0">
-              <Button onClick={startInstall} disabled={!selectedVersion} className="w-full">
-                Установить
-              </Button>
+              <div className="flex w-full flex-col gap-2">
+                {gatewayRunning && (
+                  <span className="text-center text-xs text-amber-400">Перед обновлением нажмите «Остановить»: установщик обновляет только остановленный шлюз.</span>
+                )}
+                <Button onClick={startInstall} disabled={!selectedVersion || gatewayRunning} className="w-full">
+                  Установить
+                </Button>
+              </div>
             </DialogFooter>
           </div>
         </DialogContent>
       </Dialog>
 
-      {pending && (
+      {pending && isSelf && (
+        <SelfUpdateProcessModal
+          open={step === 'process'}
+          version={pending.version}
+          onStartFailed={() => {
+            setStep('select')
+            window.setTimeout(() => setPending(null), 250)
+          }}
+          onClose={() => {
+            setStep('select')
+            window.setTimeout(() => {
+              setPending(null)
+              close()
+            }, 250)
+          }}
+        />
+      )}
+      {pending && !isSelf && (
         <UpdateProcessModal
           open={step === 'process'}
           core={updateModalCore}

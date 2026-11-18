@@ -40,6 +40,7 @@ import { restartManagedService, ServiceError, startLanService, stopLanService } 
 import { getAppState, showToast, syncClashApiPort, useAppActions, useAppContext, useModalContext, useSettings } from './lib/store'
 import { applyEmojiFont, applyTheme, THEME_MEDIA_QUERY } from './lib/theme'
 import type { Config } from './lib/types'
+import { nextPhase, selfReleases, takePendingUpdate, type SelfCatalog, type SelfStatus } from './lib/self-update'
 import { parseDocument } from 'yaml'
 
 type AuthState = 'loading' | 'login' | 'setup' | 'trusted' | 'error'
@@ -242,12 +243,15 @@ function Workspace() {
     void apiCall<typeof appInfo & { success: boolean }>('GET', 'app-info')
       .then((info) => {
         setAppInfo(info)
-        dispatch({
-          type: 'SET_VERSION',
-          version: info.package_version === 'development' ? `${info.ui_base_version} preview` : info.package_version,
-          isOutdatedUI: false,
-          isOutdatedCore: false,
-        })
+        const version = info.package_version === 'development' ? `${info.ui_base_version} preview` : info.package_version
+        dispatch({ type: 'SET_VERSION', version, isOutdatedUI: false, isOutdatedCore: false })
+        if (info.package_version === 'development') return
+        // A newer release lights up the version button, as in XKeen UI; silence on any failure.
+        void apiCall<SelfCatalog>('GET', 'self/catalog')
+          .then((catalog) => {
+            if (selfReleases(catalog).length) dispatch({ type: 'SET_VERSION', version, isOutdatedUI: true, isOutdatedCore: false })
+          })
+          .catch(() => {})
       })
       .catch(() => dispatch({ type: 'SET_VERSION', version: 'Версия недоступна', isOutdatedUI: false, isOutdatedCore: false }))
     void refreshConfigs().catch((error) => {
@@ -255,6 +259,25 @@ function Workspace() {
       showToast(error instanceof Error ? error.message : 'Не удалось загрузить профили', 'error')
     })
     void refreshVersion()
+    // Result of a panel self-update whose restart required a new sign-in.
+    const pendingUpdate = takePendingUpdate()
+    if (pendingUpdate) {
+      let attempts = 0
+      const readResult = () =>
+        apiCall<SelfStatus>('GET', 'self/update/status')
+          .then((reply) => {
+            const phase = nextPhase(pendingUpdate, reply)
+            if ((phase.kind === 'running' || phase.kind === 'restarting') && ++attempts < 30) {
+              window.setTimeout(readResult, 2000)
+            } else if (phase.kind === 'done') {
+              showToast(`XkeenWRT ${pendingUpdate} установлен. Запустите шлюз кнопкой «Запустить».`, 'success')
+            } else {
+              showToast(phase.kind === 'failed' ? phase.message : 'Результат обновления неизвестен', 'error')
+            }
+          })
+          .catch(() => showToast('Не удалось прочитать результат обновления', 'error'))
+      void readResult()
+    }
     void loadPlatformStatus()
       .then((status) => setCapabilities(status.capabilities))
       .catch(() => setCapabilities([]))

@@ -180,3 +180,57 @@ async fn network_plan_uses_transport_peer_instead_of_claimed_management_address(
         .unwrap();
     assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn panel_self_update_requires_auth_and_preview_is_inert() {
+    let root = std::env::temp_dir().join(format!("xkeen-http-{}", uuid::Uuid::new_v4()));
+    let app = app_with_profiles(
+        AuthState::for_test("token"),
+        "127.0.0.1:1080".parse().unwrap(),
+        root.clone(),
+    );
+    let call = |method: &str, path: &str, cookie: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "127.0.0.1:1080")
+            .header("cookie", cookie)
+            .header("content-type", "application/json")
+            .body(Body::from(if method == "POST" { r#"{"version":"9.9.9"}"# } else { "" }))
+            .unwrap()
+    };
+    let endpoints = [
+        ("GET", "/api/self/catalog"),
+        ("POST", "/api/self/update"),
+        ("GET", "/api/self/update/status"),
+    ];
+    for (method, path) in endpoints {
+        let reply = app.clone().oneshot(call(method, path, "")).await.unwrap();
+        assert_eq!(reply.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let setup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/setup")
+                .header("host", "127.0.0.1:1080")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"password":"long enough password","token":"token"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = setup.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    for (method, path) in endpoints {
+        let reply = app.clone().oneshot(call(method, path, &cookie)).await.unwrap();
+        assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+    }
+    assert!(!std::path::Path::new(xkeen_ui::self_update::WORK_DIR).exists());
+}

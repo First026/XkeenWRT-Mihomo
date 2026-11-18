@@ -14,6 +14,7 @@ pub mod core_catalog;
 pub mod core_update;
 pub mod management;
 pub mod private_file;
+pub mod self_update;
 pub mod system;
 pub mod system_log;
 

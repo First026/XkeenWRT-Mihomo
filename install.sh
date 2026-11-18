@@ -2,10 +2,10 @@
 set +x
 set -eu
 
-version=0.1.26.3-r0
-previous=0.1.26.2-r0
-# apk-tools 3 rejects 0.1-r26.3; the release number moved into the version.
-tag=v0.1.26.3
+version=0.1.26.4-r0
+previous=0.1.26.3-r0
+# apk-tools 3 rejects 0.1-r26.4; the release number moved into the version.
+tag=v0.1.26.4
 repo=First026/XkeenWRT-Mihomo
 core="xkeenwrt-core-${version}.apk"
 ui="xkeenwrt-ui-${version}.apk"
@@ -116,8 +116,8 @@ unset github_token
 (
     cd "$work_dir"
     printf '%s  %s\n' \
-        45f7f5f17b0f5acd811bf53ea1f371581b18de3b247d9e7d9cadc5a292e20e6d "$core" \
-        64faf1b3db1d5adf525aaa32ed7bac8f15f6f9bd77d57a4ec2a202b6fe71c5f2 "$ui" |
+        d5b9ff9a247deddde1e5a0dc05c7b163f1c991bb7527d5ffa16bc84ea86de2b9 "$core" \
+        f9b3cf4a4b4ec0fdc950fc014e4e24e8f95aa1be064455dc7a1e4fa85dda767c "$ui" |
         sha256sum -c -
 ) || die 'Контрольная сумма APK не совпала.'
 
